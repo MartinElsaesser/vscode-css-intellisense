@@ -1,10 +1,11 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v7 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v8 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
 **Changes in v7:** round-4 micro-nit — watcher-event exclusions now match folder-relative paths, consistent with the scan fallback (§8.4).
+**Changes in v8:** derived-source lifecycle (review gaps) — atomic per-document source replacement via `replaceDocument` (§8.1, §8.4), import-reachability eviction for no-longer-imported files (§8.3, §8.4), `@scope` risk row split out and corrected (§15).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -433,6 +434,7 @@ class WorkspaceIndex {
   private byUri = new Map<string, ParsedSource>();
   private byClass = new Map<string, ClassRule[]>();          // all rules, global + inline
   private classNamesByUri = new Map<string, Set<string>>();  // reverse index for O(1) eviction
+  private sourceKeysByDocument = new Map<string, Set<string>>(); // docUri -> its source keys (the file + all #style: sources)
   private importGraph = new Map<string, Set<string>>();      // resolved imports per file
   private folderIndex = new Map<string /*folderUri*/, WorkspaceIndex>(); // multi-root
 }
@@ -441,7 +443,8 @@ class WorkspaceIndex {
 Operations:
 
 - `apply(parsed: ParsedSource)`: evict only this source's rules (looked up via `classNamesByUri`), drop now-empty `byClass` buckets, then insert the new rules and refresh `classNamesByUri`. Buckets are shared across sources — never clear a class bucket wholesale.
-- `remove(uri)`: alias for `apply` with empty rules.
+- `replaceDocument(uri, sources: ParsedSource[])`: evict every key recorded in `sourceKeysByDocument.get(uri)` (the CSS file itself and all of its `#style:` sources), apply each new source, then record the new keys. All reparse paths (edit, close-from-disk) use this so a moved, edited, or deleted `<style>` block cannot leave stale rules behind.
+- `remove(uri)`: drop every key recorded for `uri`, i.e. `replaceDocument(uri, [])`.
 - `query(ctx: ClassAttributeContext, documentUri: string, opts: { includeNonMatching: boolean }, token?): ClassMatch[]`:
 
   ```
@@ -475,6 +478,7 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
 
 - `resolveImport(fromUri, specifier)`: `posix`-normalize `dirname(fromUri.path) + '/' + specifier`; reject if it escapes the root of the containing workspace folder; produce a `vscode.Uri`. For `origin:'inline'` rules the base is the containing document URI (§4.3).
 - Parse each resolved file once (memoized by URI + mtime), recursively, with a visited set (cycle-safe) and `maxImportDepth` (default 10).
+- **Reachability eviction:** after any parse or update, compute the reachable set = files matching `cssGlobs` + transitive imports from them + imports from open documents' inline styles (honoring `resolveImports`, `maxImportDepth`, cycle-safe). Parsed sources that are neither glob-matched nor reachable are evicted; the mtime parse cache may keep them. This prevents rules from a deleted `@import` (or from `resolveImports` being turned off) from lingering in completions.
 - Imported rules keep `origin:'global'` and their own `sourceUri`; range points into the imported file.
 - Missing/unreadable imports: log once, no error.
 
@@ -485,9 +489,9 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
   - start a background scan: build one exclude `GlobPattern` from `excludeGlobs` via brace expansion (`{**/node_modules/**,**/dist/**,…}`) and wrap both include and exclude in the scanned folder's `RelativePattern`: for each glob in `cssGlobs` call `workspace.findFiles(new vscode.RelativePattern(folder, glob), new vscode.RelativePattern(folder, excludePattern))`, merging and deduping results by URI. If any exclude glob contains `{`, `}`, or `,`, pass no exclude to `findFiles` and filter results with `picomatch` against the folder-relative path instead. Process in chunks of 25 files; between chunks `await new Promise(r => setImmediate(r))`; cap at 5000 files per folder with a logged warning;
   - read with `vscode.workspace.fs.readFile` (works in remote/untitled contexts), decode UTF-8, strip BOM;
   - text documents that are open but not yet indexed are parsed on demand.
-- `onDidChangeTextDocument` for indexed document kinds: debounce 200 ms per URI; parse from `doc.getText()` with `version = doc.version`.
+- `onDidChangeTextDocument` for indexed document kinds: debounce 200 ms per URI; parse from `doc.getText()` with `version = doc.version`, then apply via `replaceDocument` (the document's previous sources, including its `<style>` blocks, are evicted first).
 - Watchers: one `createFileSystemWatcher` per glob in `cssGlobs`; create/change → reparse from disk, delete → `remove`. On each event, resolve `workspace.getWorkspaceFolder(uri)` and ignore the URI when its **folder-relative** path matches any `excludeGlobs` pattern (match with `picomatch`, same base as the scan fallback above; the watcher API has no exclude parameter). Changing `cssGlobs`/`excludeGlobs` recreates the watchers and reindexes (§10.1).
-- Inline sources (`<style>` blocks) are keyed by their document URI and stay in sync: debounced reparse on edit; on `onDidCloseTextDocument`, reparse from disk if the document was clean and the file exists, otherwise remove the entries; untitled documents are analyzed for context/inline styles only in-session.
+- Inline sources (`<style>` blocks) are keyed by their document URI and stay in sync: debounced reparse on edit goes through `replaceDocument` (all of the document's previous inline sources are evicted before the new set is applied); on `onDidCloseTextDocument`, reparse from disk via `replaceDocument` if the document was clean and the file exists, otherwise `remove` the document's keys; untitled documents are analyzed for context/inline styles only in-session.
 - Multi-root: each workspace folder owns an index built from its own config/globs. A completion queries `workspace.getWorkspaceFolder(document.uri)`; documents outside any folder (untitled, loose files) use a session-only index containing only open documents' inline styles.
 - Commands `cssIntellisense.rebuildIndex` and `cssIntellisense.showIndexStats` registered; all disposables pushed to `context.subscriptions`.
 
@@ -717,7 +721,8 @@ Definition of done for the project: all §7.4 acceptance rows pass in integratio
 | Svelte `class:foo` not modeled | Conditional class; documented false negative when such an element must satisfy `.foo` as an ancestor. |
 | JSX `+`/`~` never match | Sibling order across components is unreliable; strictness over approximation. |
 | No implicit `html`/`body`/`head` synthesis | Markup modeled as written; full-document fixtures required for those tags. |
-| Native CSS nesting, `@scope`, rightmost-compound-without-class selectors | Skipped rather than miscompiled (§4.2). |
+| Native CSS nesting, rightmost-compound-without-class selectors | Skipped rather than miscompiled (§4.2). |
+| `@scope` wrapper ignored (its nested rules are processed normally) | Documented; can yield false positives; `@scope` evaluation is a non-goal (§1.3). |
 | Minified single-line CSS yields coarse ranges | Acceptable; docs link uses the rule start. |
 
 Future: link-scoped indexing, `:is()`/`:where()` expansion, `:not()` negation, go-to-definition for classes, "no matching ancestor" diagnostic/quick-fix, SCSS/LESS.
