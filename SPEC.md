@@ -1,8 +1,9 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v5 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v6 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
+**Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -480,7 +481,7 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
 
 - `activate()`:
   - build the index per workspace folder;
-  - start a background scan: build one exclude `GlobPattern` from `excludeGlobs` via brace expansion (`{**/node_modules/**,**/dist/**,…}`); for each glob in `cssGlobs`, call `workspace.findFiles(new vscode.RelativePattern(folder, glob), excludePattern)` and merge results, deduping by URI. If any exclude glob contains `{`, `}`, or `,`, pass no exclude to `findFiles` and filter results with `picomatch` against the workspace-relative path instead. Process in chunks of 25 files; between chunks `await new Promise(r => setImmediate(r))`; cap at 5000 files per folder with a logged warning;
+  - start a background scan: build one exclude `GlobPattern` from `excludeGlobs` via brace expansion (`{**/node_modules/**,**/dist/**,…}`) and wrap both include and exclude in the scanned folder's `RelativePattern`: for each glob in `cssGlobs` call `workspace.findFiles(new vscode.RelativePattern(folder, glob), new vscode.RelativePattern(folder, excludePattern))`, merging and deduping results by URI. If any exclude glob contains `{`, `}`, or `,`, pass no exclude to `findFiles` and filter results with `picomatch` against the folder-relative path instead. Process in chunks of 25 files; between chunks `await new Promise(r => setImmediate(r))`; cap at 5000 files per folder with a logged warning;
   - read with `vscode.workspace.fs.readFile` (works in remote/untitled contexts), decode UTF-8, strip BOM;
   - text documents that are open but not yet indexed are parsed on demand.
 - `onDidChangeTextDocument` for indexed document kinds: debounce 200 ms per URI; parse from `doc.getText()` with `version = doc.version`.
@@ -527,7 +528,7 @@ provideCompletionItems(document, position, token):
   - `detail = selectorText + ' — ' + workspaceRelativePath(sourceUri)`;
   - `sortText = String(9 - rank(rule)).padStart(2, '0') + className.toLowerCase() + '\u0000' + className` (case-insensitive ordering, deterministic tiebreak);
   - `data = { sourceUri, range }` for `resolveCompletionItem`.
-- Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `applicable` non-empty): `applicable[0]` supplies `rank()`, `selectorText` and `sourceUri`; emit with `sortText` prefixed `'zz'` (then the same rank/name ordering as above) and `detail = selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
+- Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `applicable` non-empty): `applicable[0]` supplies `rank()`, `selectorText`, `sourceUri` and `range` (for `data` and the docs link); emit with `sortText` prefixed `'zz'` (then the same rank/name ordering as above) and `detail = selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
 - Never return duplicate labels: one item per class name; if several rules match, merge selectors into the docs.
 
 `resolveCompletionItem`:
@@ -598,7 +599,7 @@ Rules: no CSS parsing inside `provideCompletionItems`; the import resolver is me
 
 - Pure modules (`parseCss`, `matcher`, `analyzeHtmlDocument`, `analyzeJsxDocument`, import resolver core, config defaults) import no `vscode` APIs.
 - Table-driven matcher tests: every row of §7.4 plus mixed-chain cases and the invariant tests from §7.2.
-- Scanner tests: quote styles, unquoted values, cursor mid-list, empty partial, malformed HTML, omitted `</li>`, comments, `<script>` with `<div>` inside a string, `<style>` capture offsets, SVG class, case-insensitive tag/attr names, cursor in attr name (no context), `/>` in `html` vs `vue`, dynamic id treated as absent.
+- Scanner tests: quote styles, unquoted values, cursor mid-list, empty partial, malformed HTML, omitted `</li>`, comments, `<script>` with `<div>` inside a string, `<style>` capture offsets, SVG class, case-insensitive tag/attr names, cursor in attr name (no context), `/>` in `html` vs `vue`, `<svg><path/></svg>` in `html` mode (path is closed; following siblings nest correctly), dynamic id treated as absent for ancestors.
 - Index query tests (pure query over a fixture index): case-insensitive/fuzzy partials (`Te`, `txt`) still return `text`; strict mode omits non-matching classes, `strictHierarchy:false` emits them with `zz` sort prefix.
 - JSX tests: `className="a |b"`, `className={"a |b"}`, dynamic `className={x}` (no context), component ancestors, `+`/`~` never match at subject or ancestor level.
 - Parser tests: all §4.4 cases, including native-nesting skip and rightmost-compound-without-class skip; a malformed selector alongside valid ones yields the valid rules and one logged error.
@@ -711,7 +712,7 @@ Definition of done for the project: all §7.4 acceptance rows pass in integratio
 | Pseudo/attr/`:not()` ignored → false positives | Documented; §7.4 rows encode the behavior. |
 | JSX hierarchy ≠ runtime DOM across components | Chains stop at components; documented; flat classes unaffected. |
 | Implied-end-tag subset incomplete | Tests for common cases (`li`, `p`, `td`); scanner is best-effort. |
-| Dynamic ids (`:id`, `v-bind:id`, JSX `id={x}`) treated as absent | Strict static analysis in v1; documented; avoids `#id` ancestor false positives. |
+| Dynamic ids (`:id`, `v-bind:id`, JSX `id={x}`) treated as absent **for ancestors**; subject-side is a documented wildcard (§7.3) | Strict static analysis in v1; avoids `#id` ancestor false positives. |
 | Svelte `class:foo` not modeled | Conditional class; documented false negative when such an element must satisfy `.foo` as an ancestor. |
 | JSX `+`/`~` never match | Sibling order across components is unreliable; strictness over approximation. |
 | No implicit `html`/`body`/`head` synthesis | Markup modeled as written; full-document fixtures required for those tags. |
