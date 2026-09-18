@@ -1,6 +1,6 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v10 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v11 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
@@ -8,6 +8,7 @@
 **Changes in v8:** derived-source lifecycle (review gaps) — atomic per-document source replacement via `replaceDocument` (§8.1, §8.4), import-reachability eviction for no-longer-imported files (§8.3, §8.4), `@scope` risk row split out and corrected (§15).
 **Changes in v9:** install fix — `@types/node` bumped `^20` → `^22` to satisfy the verified `vitest 5` peer range; extension code still targets the Node 20 runtime (§13).
 **Changes in v10:** Phase 1 implementation tweaks — `ClassAttributeContext` gains `value`/`valueRange` so `hideAlreadyUsedClasses` can see all tokens (§5.1, §9.2); `analyzeHtmlDocument`/`analyzeJsxDocument` accept an optional `version` (§5.1, §6.1).
+**Changes in v11:** completion data via a `CssCompletionItem` subclass instead of a nonexistent `CompletionItem.data` property (public API has none; the extension host passes the same instance to resolve) (§9.2).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -538,15 +539,16 @@ provideCompletionItems(document, position, token):
   - `label = className`, `kind = CompletionItemKind.Class`, `insertText = className`, `filterText = className`, `range = ctx.range`;
   - `detail = selectorText + ' — ' + workspaceRelativePath(sourceUri)`;
   - `sortText = String(9 - rank(rule)).padStart(2, '0') + className.toLowerCase() + '\u0000' + className` (case-insensitive ordering, deterministic tiebreak);
-  - `data = { sourceUri, range }` for `resolveCompletionItem`.
+  - return a `CssCompletionItem` (a subclass of `vscode.CompletionItem` with a `completionData = { selectorText, sourceUri, range }` field). VS Code's public API has no `data` property on `CompletionItem`, but the extension host caches the returned instances and passes the same object back to `resolveCompletionItem`; a subclass carries the data in a type-safe way (the pattern Microsoft's own extensions use).
 - Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `applicable` non-empty): `applicable[0]` supplies `rank()`, `selectorText`, `sourceUri` and `range` (for `data` and the docs link); emit with `sortText` prefixed `'zz'` (then the same rank/name ordering as above) and `detail = selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
 - Never return duplicate labels: one item per class name; if several rules match, merge selectors into the docs.
 
-`resolveCompletionItem`:
+`resolveCompletionItem` (reads `completionData` off the `CssCompletionItem` subclass instance):
 
 ```ts
+const { selectorText, sourceUri, range } = (item as CssCompletionItem).completionData;
 const md = new vscode.MarkdownString();
-md.appendCodeblock(rule.selectorText, 'css');
+md.appendCodeblock(selectorText, 'css');
 md.appendMarkdown(`\n[${relativePath}:${line}](${commandLink})`);
 md.isTrusted = { enabledCommands: ['vscode.open'] };
 item.documentation = md;
