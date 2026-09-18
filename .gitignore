@@ -6,3 +6,4 @@ test-results/
 coverage/
 test/integration/out/
 test/integration/fixtures/workspace/.tmp/
+opencode.json
