@@ -1,4 +1,5 @@
 import { SourceRange, StyleBlock } from '../css/selectorModel';
+import { computeLineStarts, rangeFromOffsets } from '../css/sourceRange';
 
 export interface ElementSnapshot {
   tag: string;
@@ -123,29 +124,6 @@ function isPartialStop(character: string): boolean {
     character === '=' ||
     character === '`'
   );
-}
-
-function computeLineStarts(text: string): number[] {
-  const starts = [0];
-  for (let index = 0; index < text.length; index++) {
-    if (text[index] === '\n') starts.push(index + 1);
-  }
-  return starts;
-}
-
-function positionAt(offset: number, lineStarts: number[]): { line: number; character: number } {
-  let low = 0;
-  let high = lineStarts.length - 1;
-  while (low < high) {
-    const middle = (low + high + 1) >> 1;
-    if (lineStarts[middle]! <= offset) low = middle;
-    else high = middle - 1;
-  }
-  return { line: low, character: offset - lineStarts[low]! };
-}
-
-function rangeOf(start: number, end: number, lineStarts: number[]): SourceRange {
-  return { start: positionAt(start, lineStarts), end: positionAt(end, lineStarts) };
 }
 
 function staticClasses(value: string): Set<string> {
@@ -407,9 +385,9 @@ export function analyzeHtmlDocument(
       while (end < occurrence.valueEnd && !isPartialStop(text[end]!)) end++;
       return {
         partial: text.slice(start, end),
-        range: rangeOf(start, end, lineStarts),
+        range: rangeFromOffsets(start, end, lineStarts),
         value: text.slice(occurrence.valueStart, occurrence.valueEnd),
-        valueRange: rangeOf(occurrence.valueStart, occurrence.valueEnd, lineStarts),
+        valueRange: rangeFromOffsets(occurrence.valueStart, occurrence.valueEnd, lineStarts),
         subjectTag: occurrence.tag,
         subjectId: occurrence.idDynamic ? undefined : occurrence.staticId,
         path: occurrence.path,

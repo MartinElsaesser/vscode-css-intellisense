@@ -134,6 +134,53 @@ describe('WorkspaceIndex', () => {
   });
 });
 
+describe('WorkspaceIndex derived sources', () => {
+  it('replaces all sources of a document atomically', () => {
+    const index = new WorkspaceIndex();
+    index.replaceDocument('file:///w/page.html', [
+      source('file:///w/page.html#style:5', '.old { }', {
+        origin: 'inline',
+        documentUri: 'file:///w/page.html',
+      }),
+      source('file:///w/page.html#style:120', '.other { }', {
+        origin: 'inline',
+        documentUri: 'file:///w/page.html',
+      }),
+    ]);
+    index.replaceDocument('file:///w/page.html', [
+      source('file:///w/page.html#style:90', '.final { }', {
+        origin: 'inline',
+        documentUri: 'file:///w/page.html',
+      }),
+    ]);
+    const results = index.query(ctxFor([]), 'file:///w/page.html', { includeNonMatching: false });
+    expect(results.map((result) => result.className)).toEqual(['final']);
+    expect(index.sourceUris()).toEqual(['file:///w/page.html#style:90']);
+  });
+
+  it('retains only reachable sources', () => {
+    const index = new WorkspaceIndex();
+    index.apply(source('file:///w/a.css', '.a { }'));
+    index.apply(source('file:///w/partials/_b.css', '.b { }'));
+    index.retain(new Set(['file:///w/a.css']));
+    const results = index.query(ctxFor([]), 'file:///w/page.html', { includeNonMatching: false });
+    expect(results.map((result) => result.className)).toEqual(['a']);
+  });
+
+  it('removes a document key and its rules', () => {
+    const index = new WorkspaceIndex();
+    index.replaceDocument('file:///w/page.html', [
+      source('file:///w/page.html#style:1', '.x { }', {
+        origin: 'inline',
+        documentUri: 'file:///w/page.html',
+      }),
+    ]);
+    index.remove('file:///w/page.html#style:1');
+    expect(index.sourceUris()).toEqual([]);
+    expect(index.query(ctxFor([]), 'file:///w/page.html', { includeNonMatching: false })).toHaveLength(0);
+  });
+});
+
 describe('rank', () => {
   function ruleFor(selector: string) {
     const { rules } = parseCss(`${selector} { }`, 'file:///w/a.css', { origin: 'global' });
