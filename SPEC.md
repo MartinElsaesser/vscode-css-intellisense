@@ -1,7 +1,8 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v4 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v5 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
+**Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -166,7 +167,7 @@ Synchronous, no I/O. Import resolution happens later (§8.3) so this function st
    | `comment` | ignore |
    | `string` | ignore (only occurs inside attributes) |
 
-6. **Subject compound = the rightmost compound of the selector.** If it contains no `class`, skip the whole selector: `.a div` and `div .a > p` yield no rules (no class can be completed from them). Otherwise emit one `ClassRule` per distinct class in the subject; classes in non-rightmost compounds only constrain ancestors.
+6. **Subject compound = the rightmost compound of the selector.** If it contains no `class`, skip the whole selector: `.a div` and `div .a > p` yield no rules (no class can be completed from them). Classes in non-rightmost compounds only constrain ancestors.
 7. Emit one `ClassRule` per distinct class in the subject compound (so `div .a.b` emits rules for `.a` and `.b`, both with subject `a.b`).
 8. `range` from `rule.source.start`/`rule.source.end` (postcss is 1-based line, 1-based column → subtract 1 from each). This is the whole rule including its block; every list entry of the same rule shares it. `selectorText = sel.toString().trim()`.
 9. **Dedupe within file**: key `className + '\u0000' + selectorText + '\u0000' + subject/ancestors signature`.
@@ -251,7 +252,7 @@ The builder parses the whole document once (snapshots + style blocks) and is the
 
 Rules:
 
-- Track element stack; on open tag completion push unless void or self-closing. Void set: `area base br col embed hr img input link meta param source track wbr`. `/>` closes a non-void element only in `vue`/`svelte` mode; in `html` mode it is ignored for non-void elements (HTML spec), so `<div/>` keeps the div open.
+- Track element stack; on open tag completion push unless void or self-closing. Void set: `area base br col embed hr img input link meta param source track wbr`. `/>` self-closes a non-void element in `vue`/`svelte` mode, and in `html` mode only for **foreign elements** (inside an `svg`/`math` subtree) per the HTML spec; elsewhere in `html` mode it is ignored, so `<div/>` keeps the div open. HTML integration points (`foreignObject`, SVG `desc`/`title`) are not modeled specially (documented).
 - On `</name>`: pop until matching tag (case-insensitive); if no match, ignore.
 - On `>` inside quoted attr value: not a tag end. On unquoted attr value: `>` ends both value and tag.
 - `script` content is skipped entirely (allows `<` in strings). `style` content is skipped for structure and captured as an inline style block (§8.2). `textarea` content is skipped.
@@ -377,6 +378,7 @@ function subjectMatches(subject: Compound, ctx: ClassAttributeContext): boolean 
 
 - Unknown **subject** tag/id (undefined) ⇒ wildcard, not a failure — the user may still be typing them.
 - For **ancestors**, a missing `id` is a known absence: `#main .text` does not match `<main>` without `id="main"`. Dynamic ids (`:id`, `v-bind:id`, JSX `id={x}`) are also treated as absent in v1 (see §15).
+- For the **subject**, a dynamic id yields `subjectId: undefined` ⇒ wildcard, not absence: `#x.y` is still offered on `<p :id="y">`. This is intentional — the attribute is being edited and the id may be supplied dynamically — and is asymmetric with ancestor handling.
 - `compoundMatches` ignores `universal` (already encoded as empty constraints).
 
 ### 7.4 Acceptance matrix (exact expected results)
@@ -478,7 +480,7 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
 
 - `activate()`:
   - build the index per workspace folder;
-  - start a background scan: for each glob in `cssGlobs`, call `workspace.findFiles(new vscode.RelativePattern(folder, glob), excludeGlobs)` and merge results, deduping by URI; process in chunks of 25 files; between chunks `await new Promise(r => setImmediate(r))`; cap at 5000 files per folder with a logged warning;
+  - start a background scan: build one exclude `GlobPattern` from `excludeGlobs` via brace expansion (`{**/node_modules/**,**/dist/**,…}`); for each glob in `cssGlobs`, call `workspace.findFiles(new vscode.RelativePattern(folder, glob), excludePattern)` and merge results, deduping by URI. If any exclude glob contains `{`, `}`, or `,`, pass no exclude to `findFiles` and filter results with `picomatch` against the workspace-relative path instead. Process in chunks of 25 files; between chunks `await new Promise(r => setImmediate(r))`; cap at 5000 files per folder with a logged warning;
   - read with `vscode.workspace.fs.readFile` (works in remote/untitled contexts), decode UTF-8, strip BOM;
   - text documents that are open but not yet indexed are parsed on demand.
 - `onDidChangeTextDocument` for indexed document kinds: debounce 200 ms per URI; parse from `doc.getText()` with `version = doc.version`.
@@ -525,7 +527,7 @@ provideCompletionItems(document, position, token):
   - `detail = selectorText + ' — ' + workspaceRelativePath(sourceUri)`;
   - `sortText = String(9 - rank(rule)).padStart(2, '0') + className.toLowerCase() + '\u0000' + className` (case-insensitive ordering, deterministic tiebreak);
   - `data = { sourceUri, range }` for `resolveCompletionItem`.
-- Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `applicable` non-empty): emit with `sortText` prefixed `'zz'` and `detail = first applicable selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
+- Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `applicable` non-empty): `applicable[0]` supplies `rank()`, `selectorText` and `sourceUri`; emit with `sortText` prefixed `'zz'` (then the same rank/name ordering as above) and `detail = selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
 - Never return duplicate labels: one item per class name; if several rules match, merge selectors into the docs.
 
 `resolveCompletionItem`:
@@ -670,7 +672,7 @@ SPEC.md  README.md  CHANGELOG.md  LICENSE
 
 - **Build**: esbuild bundles to `dist/extension.js` (`platform: node`, `format: cjs`, `external: ['vscode']`, `target: 'node20'`, sourcemap). `typescript` is bundled because the extension host does not provide it, so expect a multi-MB bundle (~10 MB); **IMPLEMENTER MAY** split it into a lazily-imported chunk if size becomes a problem.
 - **Runtime deps**: `postcss` (^8), `postcss-selector-parser` (^7), `typescript` (^5; runtime + bundled only, listed here and not under dev deps), `picomatch` (^4; `excludeGlobs` matching for watcher events). No native modules.
-- **Dev deps**: `@types/vscode ^1.90`, `@types/node ^20`, `@types/mocha`, `esbuild`, `typescript`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint ^9` (flat config), `typescript-eslint ^8`.
+- **Dev deps**: `@types/vscode ^1.90`, `@types/node ^20`, `@types/mocha`, `esbuild`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint ^9` (flat config), `typescript-eslint ^8`. (`typescript` is intentionally absent: it is a runtime dependency and npm installs it for local `tsc` as well.)
 - **package.json essentials**: `"main": "./dist/extension.js"`, `"engines": { "vscode": "^1.90.0" }`, `"extensionKind": ["workspace"]`, activation events:
 
   ```jsonc
