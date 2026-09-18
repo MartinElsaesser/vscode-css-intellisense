@@ -1,9 +1,10 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v6 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v7 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
+**Changes in v7:** round-4 micro-nit — watcher-event exclusions now match folder-relative paths, consistent with the scan fallback (§8.4).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -485,7 +486,7 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
   - read with `vscode.workspace.fs.readFile` (works in remote/untitled contexts), decode UTF-8, strip BOM;
   - text documents that are open but not yet indexed are parsed on demand.
 - `onDidChangeTextDocument` for indexed document kinds: debounce 200 ms per URI; parse from `doc.getText()` with `version = doc.version`.
-- Watchers: one `createFileSystemWatcher` per glob in `cssGlobs`; create/change → reparse from disk, delete → `remove`. On each event, ignore URIs whose workspace-relative path matches any `excludeGlobs` pattern (match with `picomatch`; the watcher API has no exclude parameter). Changing `cssGlobs`/`excludeGlobs` recreates the watchers and reindexes (§10.1).
+- Watchers: one `createFileSystemWatcher` per glob in `cssGlobs`; create/change → reparse from disk, delete → `remove`. On each event, resolve `workspace.getWorkspaceFolder(uri)` and ignore the URI when its **folder-relative** path matches any `excludeGlobs` pattern (match with `picomatch`, same base as the scan fallback above; the watcher API has no exclude parameter). Changing `cssGlobs`/`excludeGlobs` recreates the watchers and reindexes (§10.1).
 - Inline sources (`<style>` blocks) are keyed by their document URI and stay in sync: debounced reparse on edit; on `onDidCloseTextDocument`, reparse from disk if the document was clean and the file exists, otherwise remove the entries; untitled documents are analyzed for context/inline styles only in-session.
 - Multi-root: each workspace folder owns an index built from its own config/globs. A completion queries `workspace.getWorkspaceFolder(document.uri)`; documents outside any folder (untitled, loose files) use a session-only index containing only open documents' inline styles.
 - Commands `cssIntellisense.rebuildIndex` and `cssIntellisense.showIndexStats` registered; all disposables pushed to `context.subscriptions`.
