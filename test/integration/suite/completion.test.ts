@@ -144,4 +144,34 @@ suite('Inline styles, imports, and configuration', () => {
       await config.update('enabled', undefined, vscode.ConfigurationTarget.Global);
     }
   });
+
+  test('scans Vue single-file components', async () => {
+    const fixture = await openFixture('matrix/inline.vue');
+    if (fixture.document.languageId !== 'vue') {
+      await vscode.languages.setTextDocumentLanguage(fixture.document, 'vue');
+    }
+    await waitFor(
+      async () => find(await completionsAt(fixture.document, fixture.position), 'vue-inline') !== undefined
+    );
+    assert.ok(find(await completionsAt(fixture.document, fixture.position), 'text'), 'global rule');
+  });
+
+  test('scans Svelte components', async () => {
+    const fixture = await openFixture('matrix/inline.svelte');
+    if (fixture.document.languageId !== 'svelte') {
+      await vscode.languages.setTextDocumentLanguage(fixture.document, 'svelte');
+    }
+    await waitFor(
+      async () =>
+        find(await completionsAt(fixture.document, fixture.position), 'svelte-inline') !== undefined
+    );
+    assert.ok(find(await completionsAt(fixture.document, fixture.position), 'text'), 'global rule');
+  });
+
+  test('does not leak component styles to other documents', async () => {
+    const other = await openFixture('matrix/inline-other.html');
+    assert.ok(find(await completionsAt(other.document, other.position), 'bare'), 'positive control');
+    assert.ok(!find(await completionsAt(other.document, other.position), 'vue-inline'));
+    assert.ok(!find(await completionsAt(other.document, other.position), 'svelte-inline'));
+  });
 });

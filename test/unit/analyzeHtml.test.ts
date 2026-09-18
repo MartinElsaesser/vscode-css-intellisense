@@ -177,6 +177,18 @@ describe('analyzeHtml — Vue and Svelte specifics', () => {
     expect(context('<div :class="{ active: x }">|</div>', 'vue')).toBeUndefined();
   });
 
+  it('captures scoped Vue style blocks', () => {
+    const html = '<template><p class="x"></p></template><style scoped>.a { }</style>';
+    const analysis = analyzeHtmlDocument(html, 'vue');
+    expect(analysis.styleBlocks).toHaveLength(1);
+    expect(analysis.styleBlocks[0]!.css).toBe('.a { }');
+  });
+
+  it('ignores Svelte block syntax for nesting', () => {
+    const ctx = context('<div>{#if x}<p class="|te">{/if}</div>', 'svelte')!;
+    expect(ctx.path.map((element) => element.tag)).toEqual(['div']);
+  });
+
   it('skips the cursor inside Svelte expressions', () => {
     expect(context('<div class="a {|b} c">', 'svelte')).toBeUndefined();
     const outside = context('<div class="a |b c">', 'svelte')!;

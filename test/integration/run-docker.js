@@ -37,6 +37,6 @@ const result = run('docker', [
   'css-intellisense-it',
   'bash',
   '-lc',
-  'npm ci --no-audit --no-fund && xvfb-run -a npm run test:integration:suite',
+  'npm ci --no-audit --no-fund && VSCODE_TEST_CACHE=/root/.vscode-test VSCODE_EXTENSIONS_DIR=/root/.vscode-test/extensions xvfb-run -a npm run test:integration:suite',
 ]);
 process.exit(result.status ?? 1);
