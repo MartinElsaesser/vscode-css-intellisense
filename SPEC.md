@@ -1,12 +1,13 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v9 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v10 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
 **Changes in v7:** round-4 micro-nit — watcher-event exclusions now match folder-relative paths, consistent with the scan fallback (§8.4).
 **Changes in v8:** derived-source lifecycle (review gaps) — atomic per-document source replacement via `replaceDocument` (§8.1, §8.4), import-reachability eviction for no-longer-imported files (§8.3, §8.4), `@scope` risk row split out and corrected (§15).
 **Changes in v9:** install fix — `@types/node` bumped `^20` → `^22` to satisfy the verified `vitest 5` peer range; extension code still targets the Node 20 runtime (§13).
+**Changes in v10:** Phase 1 implementation tweaks — `ClassAttributeContext` gains `value`/`valueRange` so `hideAlreadyUsedClasses` can see all tokens (§5.1, §9.2); `analyzeHtmlDocument`/`analyzeJsxDocument` accept an optional `version` (§5.1, §6.1).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -227,6 +228,8 @@ export interface ElementSnapshot {
 export interface ClassAttributeContext {
   partial: string;              // current whitespace-delimited token under cursor
   range: SourceRange;           // replace range of `partial`
+  value: string;                // full attribute value text (all tokens)
+  valueRange: SourceRange;      // replace range of the whole value (quotes excluded)
   subjectTag?: string;          // undefined if tag name is incomplete/unknown
   subjectId?: string;           // static id= on the same start tag, if any
   path: ElementSnapshot[];      // [0] = parent
@@ -242,7 +245,8 @@ export interface DocumentAnalysis {
 
 export function analyzeHtmlDocument(
   text: string,
-  language: 'html' | 'vue' | 'svelte'
+  language: 'html' | 'vue' | 'svelte',
+  version = 0
 ): DocumentAnalysis;
 ```
 
@@ -293,7 +297,8 @@ For HTML/Vue/Svelte documents, every `<style>` block is captured with `startOffs
 ```ts
 export function analyzeJsxDocument(
   text: string,
-  fileName: string
+  fileName: string,
+  version = 0
 ): DocumentAnalysis;
 ```
 
