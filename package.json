@@ -1,0 +1,175 @@
+{
+  "name": "vscode-css-intellisense",
+  "displayName": "CSS Class Intellisense",
+  "description": "Hierarchy-aware CSS class name completion for HTML, Vue, Svelte, and JSX/TSX.",
+  "version": "0.0.1",
+  "publisher": "laborant",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:html",
+    "onLanguage:vue",
+    "onLanguage:svelte",
+    "onLanguage:javascriptreact",
+    "onLanguage:typescriptreact",
+    "onCommand:cssIntellisense.rebuildIndex",
+    "onCommand:cssIntellisense.showIndexStats"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cssIntellisense.rebuildIndex",
+        "title": "CSS Intellisense: Rebuild Index"
+      },
+      {
+        "command": "cssIntellisense.showIndexStats",
+        "title": "CSS Intellisense: Show Index Stats"
+      }
+    ],
+    "configuration": {
+      "title": "CSS Intellisense",
+      "properties": {
+        "cssIntellisense.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Master switch for all completions."
+        },
+        "cssIntellisense.cssGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.css"
+          ],
+          "scope": "resource",
+          "description": "Stylesheets to index."
+        },
+        "cssIntellisense.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/out/**",
+            "**/.git/**"
+          ],
+          "scope": "resource",
+          "description": "Excluded paths."
+        },
+        "cssIntellisense.includeInlineStyles": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Index <style> blocks in HTML, Vue, and Svelte documents."
+        },
+        "cssIntellisense.languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "html",
+            "vue",
+            "svelte",
+            "javascriptreact",
+            "typescriptreact"
+          ],
+          "scope": "window",
+          "description": "Languages where completions are offered. Changing this requires a window reload."
+        },
+        "cssIntellisense.strictHierarchy": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Only suggest classes whose selector hierarchy matches the current element context. When false, non-matching classes are shown demoted."
+        },
+        "cssIntellisense.resolveImports": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Follow local @import statements in stylesheets."
+        },
+        "cssIntellisense.maxImportDepth": {
+          "type": "number",
+          "default": 10,
+          "scope": "resource",
+          "description": "Import recursion cap."
+        },
+        "cssIntellisense.maxFileSizeKB": {
+          "type": "number",
+          "default": 10240,
+          "scope": "resource",
+          "description": "Skip CSS files larger than this size in KB."
+        },
+        "cssIntellisense.triggerSuggestAfterQuote": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Automatically open suggestions after typing class=\" or className=\"."
+        },
+        "cssIntellisense.hideAlreadyUsedClasses": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Do not suggest classes already present in the edited class attribute."
+        },
+        "cssIntellisense.trace": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "scope": "window",
+          "description": "Output channel verbosity."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "test": "npm run compile && npm run test:unit",
+    "test:unit": "vitest run",
+    "test:integration:suite": "npm run compile && node ./test/integration/run-host.js",
+    "test:integration": "node ./test/integration/run-docker.js",
+    "test:integration:host": "npm run compile && xvfb-run -a node ./test/integration/run-host.js",
+    "lint": "eslint src test",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "picomatch": "^4.0.0",
+    "postcss": "^8.4.0",
+    "postcss-selector-parser": "^7.0.0",
+    "typescript": "^5.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.3",
+    "@types/vscode": "^1.138.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.10.0",
+    "mocha": "^12.0.2",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.1"
+  }
+}
