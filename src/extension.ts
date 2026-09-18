@@ -1,27 +1,40 @@
 import * as vscode from 'vscode';
 import { CssCompletionProvider } from './completion/provider';
 import { getConfig } from './config';
-import type { CssIntellisenseConfig } from './configModel';
-import { parseCss } from './css/parseCss';
 import { analyzeHtmlDocument, DocumentAnalysis, HtmlLanguage } from './html/analyzeHtml';
+import { collectInlineSources } from './index/inlineStyles';
+import { IndexManager } from './index/indexManager';
 import { WorkspaceIndex } from './index/workspaceIndex';
 import { Logger } from './log';
 
 const HTML_LANGUAGES = new Set(['html', 'vue', 'svelte']);
-
-function braceGlob(globs: string[]): string {
-  if (globs.length === 0) return '**/node_modules/**';
-  if (globs.length === 1) return globs[0]!;
-  return `{${globs.join(',')}}`;
-}
+const JSX_LANGUAGES = new Set(['javascriptreact', 'typescriptreact']);
 
 export function activate(context: vscode.ExtensionContext): void {
   const logger = new Logger();
+  logger.setLevel(getConfig().trace);
   context.subscriptions.push(logger);
 
   const analysisCache = new Map<string, { version: number; analysis: DocumentAnalysis }>();
-  const indexes = new Map<string, WorkspaceIndex>();
+  const managers = new Map<string, IndexManager>();
+  const sessionIndex = new WorkspaceIndex();
+  let suggestScheduled = false;
 
+  const managerFor = (uri: vscode.Uri): IndexManager | undefined => {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    return folder ? managers.get(folder.uri.toString()) : undefined;
+  };
+
+  const createManager = (folder: vscode.WorkspaceFolder): IndexManager => {
+    const manager = new IndexManager(folder, logger);
+    managers.set(folder.uri.toString(), manager);
+    context.subscriptions.push(manager);
+    manager.watch();
+    void manager.scan();
+    return manager;
+  };
+
+  for (const folder of vscode.workspace.workspaceFolders ?? []) createManager(folder);
   const analysisFor = (document: vscode.TextDocument): DocumentAnalysis | undefined => {
     if (!HTML_LANGUAGES.has(document.languageId)) return undefined;
     const key = document.uri.toString();
@@ -37,9 +50,10 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const indexFor = (document: vscode.TextDocument): WorkspaceIndex | undefined => {
-    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
-    if (!folder) return undefined;
-    return indexes.get(folder.uri.toString());
+    const manager = managerFor(document.uri);
+    if (manager) return manager.index;
+    if (HTML_LANGUAGES.has(document.languageId)) return sessionIndex;
+    return undefined;
   };
 
   const provider = new CssCompletionProvider({
@@ -53,110 +67,101 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerCompletionItemProvider(getConfig().languages, provider, '-', '_')
   );
 
-  const readFile = async (uri: vscode.Uri): Promise<string | undefined> => {
-    try {
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      const text = Buffer.from(bytes).toString('utf8');
-      return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-    } catch (error) {
-      logger.warn(`read failed ${uri.toString()}: ${String(error)}`);
-      return undefined;
-    }
-  };
-
-  const parseInto = (
-    index: WorkspaceIndex,
-    uri: vscode.Uri,
-    text: string,
-    version: number
-  ): void => {
-    try {
-      const parsed = parseCss(text, uri.toString(), { origin: 'global' });
-      index.apply({
-        uri: uri.toString(),
-        version,
-        rules: parsed.rules,
-        imports: parsed.imports,
-      });
-    } catch (error) {
-      logger.warn(
-        `parse failed ${uri.toString()}: ${error instanceof Error ? error.message : String(error)}`
+  const maybeTriggerSuggest = (event: vscode.TextDocumentChangeEvent): void => {
+    const config = getConfig(event.document.uri);
+    if (!config.triggerSuggestAfterQuote) return;
+    const change = event.contentChanges[0];
+    if (!change || change.text.length === 0) return;
+    const last = change.text[change.text.length - 1];
+    if (last !== '"' && last !== "'") return;
+    const language = event.document.languageId;
+    const isJsx = JSX_LANGUAGES.has(language);
+    if (!HTML_LANGUAGES.has(language) && !isJsx) return;
+    const insertedLines = change.text.split('\n');
+    const line = change.range.start.line + insertedLines.length - 1;
+    const character =
+      insertedLines.length === 1
+        ? change.range.start.character + change.text.length
+        : insertedLines[insertedLines.length - 1]!.length;
+    const prefix = event.document.lineAt(line).text.slice(0, character);
+    const pattern = isJsx ? /className\s*=\s*["']$/ : /class\s*=\s*["']$/;
+    if (!pattern.test(prefix)) return;
+    if (suggestScheduled) return;
+    suggestScheduled = true;
+    setImmediate(() => {
+      void vscode.commands.executeCommand('editor.action.triggerSuggest').then(
+        () => {
+          suggestScheduled = false;
+        },
+        () => {
+          suggestScheduled = false;
+        }
       );
+    });
+  };
+
+  const indexOpenedDocument = (document: vscode.TextDocument, immediate: boolean): void => {
+    const manager = managerFor(document.uri);
+    if (manager) {
+      void manager.handleDocumentChanged(document, immediate);
+    } else if (HTML_LANGUAGES.has(document.languageId)) {
+      sessionIndex.replaceDocument(document.uri.toString(), collectInlineSources(document));
     }
   };
 
-  const indexFile = async (
-    index: WorkspaceIndex,
-    uri: vscode.Uri,
-    config: CssIntellisenseConfig
-  ): Promise<void> => {
-    const text = await readFile(uri);
-    if (text === undefined) return;
-    if (Buffer.byteLength(text, 'utf8') > config.maxFileSizeKB * 1024) {
-      logger.warn(`skipping large file ${uri.toString()}`);
-      return;
-    }
-    parseInto(index, uri, text, 0);
-  };
-
-  const scanFolder = async (folder: vscode.WorkspaceFolder): Promise<void> => {
-    const config = getConfig(folder.uri);
-    const index = new WorkspaceIndex();
-    indexes.set(folder.uri.toString(), index);
-    const exclude = braceGlob(config.excludeGlobs);
-    const collected = new Map<string, vscode.Uri>();
-    for (const glob of config.cssGlobs) {
-      const found = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(folder, glob),
-        exclude
-      );
-      for (const uri of found) collected.set(uri.toString(), uri);
-    }
-    let count = 0;
-    for (const uri of collected.values()) {
-      if (count >= 5000) {
-        logger.warn('scan cap reached (5000 files); some stylesheets were not indexed');
-        break;
-      }
-      await indexFile(index, uri, config);
-      count++;
-      if (count % 25 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-    logger.info(`indexed ${count} stylesheets in ${folder.name}`);
-  };
+  for (const document of vscode.workspace.textDocuments) indexOpenedDocument(document, true);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('cssIntellisense.rebuildIndex', async () => {
-      indexes.clear();
-      for (const folder of vscode.workspace.workspaceFolders ?? []) {
-        await scanFolder(folder);
+    vscode.workspace.onDidOpenTextDocument((document) => indexOpenedDocument(document, true)),
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      const document = event.document;
+      indexOpenedDocument(document, false);
+      maybeTriggerSuggest(event);
+    }),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      const manager = managerFor(document.uri);
+      if (manager) {
+        void manager.handleDocumentClosed(document);
+      } else if (HTML_LANGUAGES.has(document.languageId)) {
+        sessionIndex.replaceDocument(document.uri.toString(), []);
       }
     }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      logger.setLevel(getConfig().trace);
+      if (
+        event.affectsConfiguration('cssIntellisense.cssGlobs') ||
+        event.affectsConfiguration('cssIntellisense.excludeGlobs')
+      ) {
+        for (const manager of managers.values()) void manager.reconfigure();
+      }
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+      for (const removed of event.removed) {
+        const key = removed.uri.toString();
+        managers.get(key)?.dispose();
+        managers.delete(key);
+      }
+      for (const added of event.added) createManager(added);
+    }),
+    vscode.commands.registerCommand('cssIntellisense.rebuildIndex', async () => {
+      sessionIndex.clear();
+      for (const manager of managers.values()) await manager.reconfigure();
+    }),
     vscode.commands.registerCommand('cssIntellisense.showIndexStats', async () => {
-      if (indexes.size === 0) {
+      if (managers.size === 0) {
         await vscode.window.showInformationMessage('CSS Intellisense: no workspace folder indexed');
         return;
       }
       const lines: string[] = [];
-      for (const [key, index] of indexes) {
-        const stats = index.stats();
-        lines.push(`${key}: ${stats.files} files, ${stats.rules} rules, ${stats.classes} classes`);
+      for (const manager of managers.values()) {
+        const stats = manager.stats();
+        lines.push(
+          `${manager.folder.name}: ${stats.files} files, ${stats.rules} rules, ${stats.classes} classes`
+        );
       }
       await vscode.window.showInformationMessage(lines.join('\n'));
-    }),
-    vscode.workspace.onDidChangeTextDocument((event) => {
-      if (event.document.languageId !== 'css') return;
-      const folder = vscode.workspace.getWorkspaceFolder(event.document.uri);
-      if (!folder) return;
-      const index = indexes.get(folder.uri.toString());
-      if (!index) return;
-      parseInto(index, event.document.uri, event.document.getText(), event.document.version);
     })
   );
-
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    void scanFolder(folder);
-  }
 }
 
 export function deactivate(): void {}

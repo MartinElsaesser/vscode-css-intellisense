@@ -1,6 +1,6 @@
 import postcss, { AtRule, Node, Rule } from 'postcss';
 import selectorParser, { Selector } from 'postcss-selector-parser';
-import { extractImportSpecifier, resolveImportUri } from './importResolver';
+import { extractImportSpecifier, resolveImportUri } from './importSpecifier';
 import {
   AncestorRequirement,
   ClassRule,

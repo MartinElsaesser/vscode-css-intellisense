@@ -65,6 +65,17 @@ export class WorkspaceIndex {
     return [...this.byUri.keys()];
   }
 
+  sourceKeysFor(documentUri: string): string[] {
+    return [...(this.sourceKeysByDocument.get(documentUri) ?? [])];
+  }
+
+  clear(): void {
+    this.byUri.clear();
+    this.byClass.clear();
+    this.classNamesByUri.clear();
+    this.sourceKeysByDocument.clear();
+  }
+
   parsedFor(uri: string): ParsedSource | undefined {
     return this.byUri.get(uri);
   }

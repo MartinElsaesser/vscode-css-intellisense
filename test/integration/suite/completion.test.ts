@@ -90,3 +90,58 @@ suite('Completion matrix (HTML)', () => {
     }
   });
 });
+
+suite('Inline styles, imports, and configuration', () => {
+  test('scopes inline <style> rules to their document', async () => {
+    const inline = await openFixture('matrix/inline.html');
+    await waitFor(
+      async () => find(await completionsAt(inline.document, inline.position), 'inline-only') !== undefined
+    );
+    const other = await openFixture('matrix/inline-other.html');
+    assert.ok(find(await completionsAt(other.document, other.position), 'bare'), 'positive control');
+    assert.ok(!find(await completionsAt(other.document, other.position), 'inline-only'));
+  });
+
+  test('follows @import when resolveImports is on', async () => {
+    const config = vscode.workspace.getConfiguration('cssIntellisense');
+    await config.update('cssGlobs', ['styles/importer.css'], vscode.ConfigurationTarget.Global);
+    try {
+      await vscode.commands.executeCommand('cssIntellisense.rebuildIndex');
+      const { document, position } = await openFixture('matrix/imported.html');
+      await waitFor(
+        async () => find(await completionsAt(document, position), 'imported-only') !== undefined
+      );
+    } finally {
+      await config.update('cssGlobs', undefined, vscode.ConfigurationTarget.Global);
+      await vscode.commands.executeCommand('cssIntellisense.rebuildIndex');
+    }
+  });
+
+  test('does not follow @import when resolveImports is off', async () => {
+    const config = vscode.workspace.getConfiguration('cssIntellisense');
+    await config.update('cssGlobs', ['styles/importer.css'], vscode.ConfigurationTarget.Global);
+    await config.update('resolveImports', false, vscode.ConfigurationTarget.Global);
+    try {
+      await vscode.commands.executeCommand('cssIntellisense.rebuildIndex');
+      const { document, position } = await openFixture('matrix/imported.html');
+      await waitFor(
+        async () => find(await completionsAt(document, position), 'imported-only') === undefined
+      );
+    } finally {
+      await config.update('resolveImports', undefined, vscode.ConfigurationTarget.Global);
+      await config.update('cssGlobs', undefined, vscode.ConfigurationTarget.Global);
+      await vscode.commands.executeCommand('cssIntellisense.rebuildIndex');
+    }
+  });
+
+  test('master switch disables completions', async () => {
+    const config = vscode.workspace.getConfiguration('cssIntellisense');
+    await config.update('enabled', false, vscode.ConfigurationTarget.Global);
+    try {
+      const { document, position } = await openFixture('matrix/div-descendant.html');
+      assert.ok(!find(await completionsAt(document, position), 'text'));
+    } finally {
+      await config.update('enabled', undefined, vscode.ConfigurationTarget.Global);
+    }
+  });
+});
