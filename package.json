@@ -146,9 +146,9 @@
     "watch": "node esbuild.js --watch",
     "test": "npm run compile && npm run test:unit",
     "test:unit": "vitest run",
-    "test:integration:suite": "npm run compile && node ./test/integration/run-host.js",
+    "test:integration:suite": "npm run compile && tsc -p test/integration/tsconfig.json && node ./test/integration/run-host.js",
     "test:integration": "node ./test/integration/run-docker.js",
-    "test:integration:host": "npm run compile && xvfb-run -a node ./test/integration/run-host.js",
+    "test:integration:host": "npm run compile && tsc -p test/integration/tsconfig.json && xvfb-run -a node ./test/integration/run-host.js",
     "lint": "eslint src test",
     "typecheck": "tsc --noEmit",
     "package": "vsce package"

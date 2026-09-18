@@ -3,7 +3,7 @@ const tseslint = require('typescript-eslint');
 
 module.exports = tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'test/integration/fixtures/**'],
+    ignores: ['dist/**', 'node_modules/**', 'test/integration/fixtures/**', 'test/integration/out/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -27,6 +27,9 @@ module.exports = tseslint.config(
         console: 'readonly',
         __dirname: 'readonly',
       },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   }
 );

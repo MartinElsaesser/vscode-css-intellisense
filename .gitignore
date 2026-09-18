@@ -4,3 +4,5 @@ dist/
 .vscode-test/
 test-results/
 coverage/
+test/integration/out/
+test/integration/fixtures/workspace/.tmp/

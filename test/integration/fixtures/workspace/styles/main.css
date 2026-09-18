@@ -1,0 +1,12 @@
+div .text { color: red; }
+div > .direct { color: red; }
+div.text { color: red; }
+section .text { color: red; }
+.bare { color: red; }
+div + .sibling { color: red; }
+div ~ .general { color: red; }
+ul li .nested { color: red; }
+#main .hashed { color: red; }
+.a:hover .pseudo { color: red; }
+[data-x] .attr { color: red; }
+html body .fulldoc { color: red; }
