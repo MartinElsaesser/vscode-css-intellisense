@@ -22,5 +22,11 @@
     "test",
     "esbuild.js",
     "vitest.config.mts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test/integration/fixtures",
+    "test/integration/out"
   ]
 }

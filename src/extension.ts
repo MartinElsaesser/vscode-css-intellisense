@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CssCompletionProvider } from './completion/provider';
 import { getConfig } from './config';
 import { analyzeHtmlDocument, DocumentAnalysis, HtmlLanguage } from './html/analyzeHtml';
+import { analyzeJsxDocument, isJsxLanguage } from './html/jsxContext';
 import { collectInlineSources } from './index/inlineStyles';
 import { IndexManager } from './index/indexManager';
 import { WorkspaceIndex } from './index/workspaceIndex';
@@ -36,15 +37,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   for (const folder of vscode.workspace.workspaceFolders ?? []) createManager(folder);
   const analysisFor = (document: vscode.TextDocument): DocumentAnalysis | undefined => {
-    if (!HTML_LANGUAGES.has(document.languageId)) return undefined;
+    const language = document.languageId;
+    const isHtml = HTML_LANGUAGES.has(language);
+    if (!isHtml && !isJsxLanguage(language)) return undefined;
     const key = document.uri.toString();
     const cached = analysisCache.get(key);
     if (cached && cached.version === document.version) return cached.analysis;
-    const analysis = analyzeHtmlDocument(
-      document.getText(),
-      document.languageId as HtmlLanguage,
-      document.version
-    );
+    const analysis = isHtml
+      ? analyzeHtmlDocument(document.getText(), language as HtmlLanguage, document.version)
+      : analyzeJsxDocument(document.getText(), document.fileName, document.version);
     analysisCache.set(key, { version: document.version, analysis });
     return analysis;
   };

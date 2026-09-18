@@ -175,3 +175,25 @@ suite('Inline styles, imports, and configuration', () => {
     assert.ok(!find(await completionsAt(other.document, other.position), 'svelte-inline'));
   });
 });
+
+suite('JSX/TSX completions', () => {
+  test('suggests hierarchy-aware classes in TSX', async () => {
+    const { document, position } = await openFixture('matrix/classes.tsx');
+    await waitFor(
+      async () => find(await completionsAt(document, position), 'text') !== undefined
+    );
+  });
+
+  test('never matches sibling combinators in JSX', async () => {
+    const { document, position } = await openFixture('matrix/siblings.tsx');
+    assert.ok(find(await completionsAt(document, position), 'bare'), 'positive control');
+    assert.ok(!find(await completionsAt(document, position), 'sibling'));
+    assert.ok(!find(await completionsAt(document, position), 'general'));
+  });
+
+  test('does not cross component boundaries', async () => {
+    const { document, position } = await openFixture('matrix/component.tsx');
+    assert.ok(find(await completionsAt(document, position), 'bare'), 'positive control');
+    assert.ok(!find(await completionsAt(document, position), 'text'));
+  });
+});
