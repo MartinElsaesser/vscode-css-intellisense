@@ -1,6 +1,7 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v3 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v4 · **Target:** VS Code `^1.90.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -82,7 +83,8 @@ export interface ClassRule {
   subject: Compound;
   ancestors: AncestorRequirement[];  // [0] = compound immediately left of subject
   sourceUri: string;                 // uri.toString()
-  range: SourceRange;                // selector position in the source file
+  range: SourceRange;                // whole-rule range (selector + block) as reported by postcss;
+                                     // all ClassRules from one comma-list share it (per-selector range is future work)
   selectorText: string;              // original selector text of this list entry
   origin: 'global' | 'inline';
   documentUri?: string;              // present iff origin === 'inline'
@@ -137,7 +139,7 @@ Synchronous, no I/O. Import resolution happens later (§8.3) so this function st
 ### 4.2 Pipeline
 
 1. `postcss.parse(css, { from: sourceUri })`. On `CssSyntaxError`: throw a typed `ParseFailure` (caller handles, §8.5). Do not attempt partial recovery.
-2. `root.walkRules(rule => …)`. `walkRules` already descends into at-rules. Before processing a rule, walk `rule.parent` chain; if any ancestor at-rule name (lowercased, without `@`) is in `SKIP_AT_RULES`, skip the rule.
+2. `root.walkRules(rule => …)`. `walkRules` already descends into at-rules. Before processing a rule, walk `rule.parent` chain; **skip the rule if any ancestor is a `rule` node** (native CSS nesting): postcss exposes `.foo { .bar {} }` as an ordinary rule with an implicit `&`, and compiling `.bar` as top-level would be a miscompile, not a miss. Also skip if any ancestor at-rule name (lowercased, without `@`) is in `SKIP_AT_RULES`.
    - `SKIP_AT_RULES = ['keyframes','-webkit-keyframes','-moz-keyframes','font-face','page','counter-style','font-feature-values','property','viewport','-ms-viewport']`
    - All other at-rules (`media`, `supports`, `layer`, `container`, `scope`, unknown) do not affect matching; their nested rules are processed normally.
 3. Parse `rule.selector` with `postcss-selector-parser`:
@@ -164,9 +166,9 @@ Synchronous, no I/O. Import resolution happens later (§8.3) so this function st
    | `comment` | ignore |
    | `string` | ignore (only occurs inside attributes) |
 
-6. **Subject compound** = the rightmost compound containing at least one `class`. Classes anywhere else in the selector only constrain ancestors and produce no completion rule.
+6. **Subject compound = the rightmost compound of the selector.** If it contains no `class`, skip the whole selector: `.a div` and `div .a > p` yield no rules (no class can be completed from them). Otherwise emit one `ClassRule` per distinct class in the subject; classes in non-rightmost compounds only constrain ancestors.
 7. Emit one `ClassRule` per distinct class in the subject compound (so `div .a.b` emits rules for `.a` and `.b`, both with subject `a.b`).
-8. `range` from `rule.source.start`/`rule.source.end` (postcss is 1-based line, 1-based column → subtract 1 from each to get the `SourceRange` convention). `selectorText = sel.toString().trim()`.
+8. `range` from `rule.source.start`/`rule.source.end` (postcss is 1-based line, 1-based column → subtract 1 from each). This is the whole rule including its block; every list entry of the same rule shares it. `selectorText = sel.toString().trim()`.
 9. **Dedupe within file**: key `className + '\u0000' + selectorText + '\u0000' + subject/ancestors signature`.
 
 ### 4.3 `@import` extraction
@@ -180,12 +182,16 @@ For each `atRule.name.toLowerCase() === 'import'`, accept only local file specif
 - Reject if specifier matches `/^(?:[a-z]+:|\/\/|data:)/i` or contains `#`.
 - Store `ImportRef` with the specifier; resolution to absolute URIs is in §8.3.
 - Media query text after the specifier is ignored (imported rules are always active, consistent with `@media` handling).
+- For `origin:'inline'` (a `<style>` block), `ImportRef.fromUri` is the *containing document* URI, and resolution is relative to the document's directory — this matches HTML `<style>` base-URL behavior and Vue/Svelte build tooling.
 
 ### 4.4 Edge cases (must be covered by unit tests)
 
 - `.text` → ancestors `[]`, subject tag/id undefined.
 - `div.text` → subject tag `div`, class `text`; subject class not enforced at match time (§7.3).
 - `.a, .b` → two independent selectors.
+- `.a, .b p` → only `.a` yields a rule (rightmost compound `p` has no class).
+- `.a div` / `div .a > p` → no rules (rightmost compound has no class).
+- `.foo { .bar {} }` → no rules (native nesting: the inner rule has a `rule` ancestor).
 - `div .text, section .text` → two rules for `text` (union semantics).
 - `.foo\:bar` (Tailwind variant) → `className === 'foo:bar'`; escapes use the parser's decoded `value`.
 - `[data-x] .text` → ancestor compound `universal` (attribute stripped).
@@ -229,14 +235,15 @@ export interface DocumentAnalysis {
   styleBlocks: { startOffset: number; endOffset: number; css: string }[];
 }
 
-export function analyzeHtml(
+export function analyzeHtmlDocument(
   text: string,
-  cursorOffset: number,
   language: 'html' | 'vue' | 'svelte'
-): ClassAttributeContext | undefined;
+): DocumentAnalysis;
 ```
 
 `parentChildren` is a shared array per parent, giving O(n) total memory and O(1) access to preceding siblings (`parentChildren[i-1]` for `+`, scan `0..i-1` backwards for `~`).
+
+The builder parses the whole document once (snapshots + style blocks) and is the cacheable unit of §5.3; `contextAt(offset)` is O(depth) and may be called repeatedly for the same version. A one-shot `analyzeHtml(text, offset, language)` wrapper (`analyzeHtmlDocument(...).contextAt(offset)`) is optional.
 
 ### 5.2 Scanner states
 
@@ -244,7 +251,7 @@ export function analyzeHtml(
 
 Rules:
 
-- Track element stack; on open tag completion push unless void/self-closing. Void set: `area base br col embed hr img input link meta param source track wbr`.
+- Track element stack; on open tag completion push unless void or self-closing. Void set: `area base br col embed hr img input link meta param source track wbr`. `/>` closes a non-void element only in `vue`/`svelte` mode; in `html` mode it is ignored for non-void elements (HTML spec), so `<div/>` keeps the div open.
 - On `</name>`: pop until matching tag (case-insensitive); if no match, ignore.
 - On `>` inside quoted attr value: not a tag end. On unquoted attr value: `>` ends both value and tag.
 - `script` content is skipped entirely (allows `<` in strings). `style` content is skipped for structure and captured as an inline style block (§8.2). `textarea` content is skipped.
@@ -253,9 +260,10 @@ Rules:
   - value bounds from quote or unquoted terminators;
   - `partial` = maximal run of characters around the cursor not in `{whitespace, '"', "'", '>', '<', '=', '`'}` clamped to value bounds;
   - `range` spans `partial`; if empty, an empty range at the cursor;
-  - `subjectTag` = current tag name unless the cursor is inside the tag name span (unknown → undefined);
-  - `subjectId` = static `id` attribute value on the same start tag if already parsed; dynamic attributes (`:id`, `v-bind:id`, `{…}`) → undefined.
-- Implied end tags (best effort): opening `li` closes an open `li`; `dt|dd` close each other; `tr` closes `tr` and `td|th`; `td|th` close `td|th`; `option` closes `option`; `p` closes an open `p` when a block-level start tag opens. Document the subset in code comments.
+  - `subjectTag` = the start tag's parsed name (the whole start tag is parsed before context is queried); `undefined` only for malformed input where no tag name could be parsed (e.g. `< class="▮">`);
+  - `subjectId` = static `id` attribute value **anywhere on that start tag** (attribute order does not matter; first duplicate wins); dynamic attributes (`:id`, `v-bind:id`, `{…}`) → `undefined`.
+- Implied end tags (best effort): opening `li` closes an open `li`; `dt|dd` close each other; `tr` closes `tr` and `td|th`; `td|th` close `td|th`; `option` closes `option`; `p` closes an open `p` when one of these start tags opens: `address article aside blockquote details dialog div dl fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr main menu nav ol p pre search section table ul`. Document the subset in code comments.
+- No implicit `html`/`body`/`head` synthesis: markup is modeled exactly as written; fixtures that exercise `html body .text` must be full documents.
 - Raw-text scan boundaries are case-insensitive.
 
 ### 5.3 Caching
@@ -265,7 +273,7 @@ Rules:
 ### 5.4 Vue and Svelte
 
 - **Vue:** run the HTML scanner over the whole `.vue` file. `<script>` is skipped as raw text, `<style>` is captured, `<template>` content is scanned as normal markup. Dynamic `:class`/`v-bind:class` values are not `class` attributes → no completions inside them.
-- **Svelte:** same scanner; `{…}` expression spans inside attribute values mean the attribute is treated as dynamic and skipped if the cursor is inside the expression; virtual `{#if}`/`{:else}` blocks are plain text and do not affect nesting.
+- **Svelte:** same scanner; `{…}` expression spans inside attribute values mean the attribute is treated as dynamic and skipped if the cursor is inside the expression; virtual `{#if}`/`{:else}` blocks are plain text and do not affect nesting. `class:foo` directives never enter an element's class set, so an element carrying `class:active` does not satisfy an `.active` ancestor requirement (documented false negative).
 
 ### 5.5 Style block capture
 
@@ -278,12 +286,13 @@ For HTML/Vue/Svelte documents, every `<style>` block is captured with `startOffs
 ### 6.1 API
 
 ```ts
-export function analyzeJsx(
+export function analyzeJsxDocument(
   text: string,
-  fileName: string,
-  cursorOffset: number
-): ClassAttributeContext | undefined;
+  fileName: string
+): DocumentAnalysis;
 ```
+
+Returns the same `DocumentAnalysis` shape as §5.1 with `styleBlocks: []`; it is the cacheable unit for TSX files, and `contextAt(offset)` may be called repeatedly for the same version.
 
 ### 6.2 Implementation
 
@@ -297,8 +306,8 @@ export function analyzeJsx(
    - tag: `JsxTagNameExpression` text;
    - classes: static `className` string split on whitespace (dynamic ones → empty set);
    - id: static `id` string literal if present;
-   - **capitalized tags (components) are included in `parentChildren` for sibling indexing but are skipped entirely in `path`** (not pushed), because their rendered DOM is unknowable. Consequence: hierarchy chains do not cross component boundaries. Documented.
-6. `+`/`~` requirements never match in JSX: set `subjectParentChildren: []`, `subjectIndexInParent: 0`, and the matcher naturally fails them (no preceding siblings known). Do not special-case.
+   - **capitalized tags (components) are skipped entirely** (not pushed into `path`); their rendered DOM is unknowable, so hierarchy chains do not cross component boundaries (documented).
+6. **Sibling combinators never match in JSX, at any level.** Every snapshot built here — subject and ancestors — gets `parentChildren: []`, `indexInParent: 0`, so the matcher naturally fails `+`/`~` requirements. Rationale: JSX sibling order only approximates DOM sibling order (components may render wrappers), and strict mode prefers false negatives. Do not special-case.
 
 ### 6.3 Scope
 
@@ -366,7 +375,8 @@ function subjectMatches(subject: Compound, ctx: ClassAttributeContext): boolean 
 }
 ```
 
-- Unknown subject tag/id (undefined) ⇒ wildcard, not a failure.
+- Unknown **subject** tag/id (undefined) ⇒ wildcard, not a failure — the user may still be typing them.
+- For **ancestors**, a missing `id` is a known absence: `#main .text` does not match `<main>` without `id="main"`. Dynamic ids (`:id`, `v-bind:id`, JSX `id={x}`) are also treated as absent in v1 (see §15).
 - `compoundMatches` ignores `universal` (already encoded as empty constraints).
 
 ### 7.4 Acceptance matrix (exact expected results)
@@ -393,13 +403,13 @@ Cursor position is marked `▮`.
 | `div.text` | `<span class="**▮**">` | no match |
 | `#main .text` | `<main id="main"><p class="**▮**">` | match |
 | `#main .text` | `<main id="other"><p class="**▮**">` | no match |
-| `#main .text` | `<main><p class="**▮**">` (no id attr) | match (unknown wildcard) |
+| `#main .text` | `<main><p class="**▮**">` (no id attr) | no match (missing id is a known absence) |
 | `.a:hover .text` | `<p class="a"><span class="**▮**">` | match (pseudo ignored) |
 | `[data-x] .text` | `<p><span class="**▮**">` | match (attr ignored) |
 | `.a:not(.b) .text` | `<p class="a b"><span class="**▮**">` | match (documented limitation) |
 | `main .a > .b + .c .text` | `<main><section class="a"><b class="b"></b><i class="c"><p class="**▮**">` | match |
 | `* .text` | `<p><span class="**▮**">` | match |
-| `html body .text` | `<body><p class="**▮**">` | match |
+| `html body .text` | `<html><body><p class="**▮**"></p></body></html>` | match (full document; no implicit tag synthesis) |
 
 ---
 
@@ -408,6 +418,13 @@ Cursor position is marked `▮`.
 ### 8.1 State
 
 ```ts
+export interface ClassMatch {
+  className: string;
+  best?: ClassRule;        // highest-ranked matching rule; undefined if none matched
+  matching: ClassRule[];   // matching rules applicable to this document
+  applicable: ClassRule[]; // all applicable rules (origin filter passed)
+}
+
 class WorkspaceIndex {
   private byUri = new Map<string, ParsedSource>();
   private byClass = new Map<string, ClassRule[]>();          // all rules, global + inline
@@ -419,23 +436,28 @@ class WorkspaceIndex {
 
 Operations:
 
-- `apply(parsed: ParsedSource)`: evict the previous entry for `parsed.uri`, remove its class names from `byClass`, then insert new rules and rebuild `classNamesByUri`.
+- `apply(parsed: ParsedSource)`: evict only this source's rules (looked up via `classNamesByUri`), drop now-empty `byClass` buckets, then insert the new rules and refresh `classNamesByUri`. Buckets are shared across sources — never clear a class bucket wholesale.
 - `remove(uri)`: alias for `apply` with empty rules.
-- `query(ctx: ClassAttributeContext, documentUri: string, token): ClassMatch[]`:
+- `query(ctx: ClassAttributeContext, documentUri: string, opts: { includeNonMatching: boolean }, token?): ClassMatch[]`:
 
   ```
   for (className, rules) of byClass:
     best = undefined
     matching = []
+    applicable = []
     for rule of rules:
       if rule.origin === 'inline' && rule.documentUri !== documentUri: continue
-      if ctx.partial.length && !className.startsWith(ctx.partial): continue   // cheap prefilter
+      applicable.push(rule)
       if matches(rule, ctx):
         matching.push(rule)
         if best === undefined || rank(rule) > rank(best): best = rule
-    if best: results.push({ className, rule: best, matching })
+    if best: results.push({ className, best, matching, applicable })
+    else if opts.includeNonMatching && applicable.length:
+      results.push({ className, matching: [], applicable })
   return results
   ```
+
+  **Do not prefilter on `ctx.partial`.** VS Code performs case-insensitive, fuzzy filtering via `filterText`, so a case-sensitive `startsWith` filter would drop valid matches (e.g. `txt` → `text`, `Te` → `text`). The matcher is cheap; filtering is the UI's job.
 
 - `stats()`: counts for the `showIndexStats` command.
 
@@ -447,7 +469,7 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
 
 ### 8.3 Import resolution
 
-- `resolveImport(fromUri, specifier)`: `posix`-normalize `dirname(fromUri.path) + '/' + specifier`; reject if it escapes the workspace root; produce a `vscode.Uri`.
+- `resolveImport(fromUri, specifier)`: `posix`-normalize `dirname(fromUri.path) + '/' + specifier`; reject if it escapes the root of the containing workspace folder; produce a `vscode.Uri`. For `origin:'inline'` rules the base is the containing document URI (§4.3).
 - Parse each resolved file once (memoized by URI + mtime), recursively, with a visited set (cycle-safe) and `maxImportDepth` (default 10).
 - Imported rules keep `origin:'global'` and their own `sourceUri`; range points into the imported file.
 - Missing/unreadable imports: log once, no error.
@@ -456,12 +478,13 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
 
 - `activate()`:
   - build the index per workspace folder;
-  - start a background scan: `workspace.findFiles(glob, excludeGlob)` where `glob = new vscode.RelativePattern(folder, cssGlobs)`; process in chunks of 25 files; between chunks `await new Promise(r => setImmediate(r))`; cap at 5000 files per folder with a logged warning;
+  - start a background scan: for each glob in `cssGlobs`, call `workspace.findFiles(new vscode.RelativePattern(folder, glob), excludeGlobs)` and merge results, deduping by URI; process in chunks of 25 files; between chunks `await new Promise(r => setImmediate(r))`; cap at 5000 files per folder with a logged warning;
   - read with `vscode.workspace.fs.readFile` (works in remote/untitled contexts), decode UTF-8, strip BOM;
   - text documents that are open but not yet indexed are parsed on demand.
 - `onDidChangeTextDocument` for indexed document kinds: debounce 200 ms per URI; parse from `doc.getText()` with `version = doc.version`.
-- `createFileSystemWatcher('**/*.css')`: create/change → reparse from disk; delete → `remove`.
-- Dynamic documents (`untitled:`) are analyzed for inline styles/context, but are not indexed globally.
+- Watchers: one `createFileSystemWatcher` per glob in `cssGlobs`; create/change → reparse from disk, delete → `remove`. On each event, ignore URIs whose workspace-relative path matches any `excludeGlobs` pattern (match with `picomatch`; the watcher API has no exclude parameter). Changing `cssGlobs`/`excludeGlobs` recreates the watchers and reindexes (§10.1).
+- Inline sources (`<style>` blocks) are keyed by their document URI and stay in sync: debounced reparse on edit; on `onDidCloseTextDocument`, reparse from disk if the document was clean and the file exists, otherwise remove the entries; untitled documents are analyzed for context/inline styles only in-session.
+- Multi-root: each workspace folder owns an index built from its own config/globs. A completion queries `workspace.getWorkspaceFolder(document.uri)`; documents outside any folder (untitled, loose files) use a session-only index containing only open documents' inline styles.
 - Commands `cssIntellisense.rebuildIndex` and `cssIntellisense.showIndexStats` registered; all disposables pushed to `context.subscriptions`.
 
 ### 8.5 Error handling
@@ -488,8 +511,10 @@ provideCompletionItems(document, position, token):
   if token.isCancellationRequested: return
   ctx = analysisFor(document).contextAt(offset)   // §5/§6
   if !ctx: return
-  matches = indexFor(document).query(ctx, document.uri.toString(), token)
-  return matches.map(postProcess).filter(Boolean)
+  strict = config(document).strictHierarchy
+  results = indexFor(document).query(ctx, document.uri.toString(),
+                                     { includeNonMatching: !strict }, token)
+  return results.map(postProcess).filter(Boolean)
 ```
 
 `postProcess`:
@@ -500,7 +525,7 @@ provideCompletionItems(document, position, token):
   - `detail = selectorText + ' — ' + workspaceRelativePath(sourceUri)`;
   - `sortText = String(9 - rank(rule)).padStart(2, '0') + className.toLowerCase() + '\u0000' + className` (case-insensitive ordering, deterministic tiebreak);
   - `data = { sourceUri, range }` for `resolveCompletionItem`.
-- Non-matching classes when `strictHierarchy === false`: add them with `sortText` prefixed `'zz'` and `detail += ' (context mismatch)'`.
+- Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `applicable` non-empty): emit with `sortText` prefixed `'zz'` and `detail = first applicable selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
 - Never return duplicate labels: one item per class name; if several rules match, merge selectors into the docs.
 
 `resolveCompletionItem`:
@@ -541,7 +566,7 @@ where `commandLink = 'command:vscode.open?' + encodeURIComponent(JSON.stringify(
 | `cssIntellisense.hideAlreadyUsedClasses` | boolean | `true` | window | Skip classes already in the attribute. |
 | `cssIntellisense.trace` | `"off"\|"messages"\|"verbose"` | `"off"` | window | Output channel verbosity. |
 
-Runtime `workspace.getConfiguration('cssIntellisense', documentUri)` is read per completion and per index mutation; config changes invalidate nothing eagerly except `rebuildIndex` (README: run the command after changing globs).
+Runtime `workspace.getConfiguration('cssIntellisense', documentUri)` is read per completion and per index mutation; changing `cssGlobs`/`excludeGlobs` recreates watchers and reindexes via `onDidChangeConfiguration`; other settings take effect on the next read.
 
 ### 10.2 Commands and UI
 
@@ -569,12 +594,13 @@ Rules: no CSS parsing inside `provideCompletionItems`; the import resolver is me
 
 ### 12.1 Unit tests (host, vitest)
 
-- Pure modules (`parseCss`, `matcher`, `analyzeHtml`, `analyzeJsx`, import resolver core, config defaults) import no `vscode` APIs.
+- Pure modules (`parseCss`, `matcher`, `analyzeHtmlDocument`, `analyzeJsxDocument`, import resolver core, config defaults) import no `vscode` APIs.
 - Table-driven matcher tests: every row of §7.4 plus mixed-chain cases and the invariant tests from §7.2.
-- Scanner tests: quote styles, unquoted values, cursor mid-list, empty partial, malformed HTML, omitted `</li>`, comments, `<script>` with `<div>` inside a string, `<style>` capture offsets, SVG class, case-insensitive tag/attr names, cursor in attr name (no context).
-- JSX tests: `className="a |b"`, `className={"a |b"}`, dynamic `className={x}` (no context), component ancestors, `+` never matches.
-- Parser tests: all §4.4 cases; a malformed selector alongside valid ones yields the valid rules and one logged error.
-- Import resolver: relative paths, cycles, depth cap, remote rejection, missing file.
+- Scanner tests: quote styles, unquoted values, cursor mid-list, empty partial, malformed HTML, omitted `</li>`, comments, `<script>` with `<div>` inside a string, `<style>` capture offsets, SVG class, case-insensitive tag/attr names, cursor in attr name (no context), `/>` in `html` vs `vue`, dynamic id treated as absent.
+- Index query tests (pure query over a fixture index): case-insensitive/fuzzy partials (`Te`, `txt`) still return `text`; strict mode omits non-matching classes, `strictHierarchy:false` emits them with `zz` sort prefix.
+- JSX tests: `className="a |b"`, `className={"a |b"}`, dynamic `className={x}` (no context), component ancestors, `+`/`~` never match at subject or ancestor level.
+- Parser tests: all §4.4 cases, including native-nesting skip and rightmost-compound-without-class skip; a malformed selector alongside valid ones yields the valid rules and one logged error.
+- Import resolver: relative paths, inline-style base URI, cycles, depth cap, remote rejection, missing file.
 
 ### 12.2 Integration tests (headless Docker, default)
 
@@ -638,13 +664,13 @@ src/
 test/
   unit/*.test.ts
   integration/{Dockerfile,run-docker.js,run-host.js,suite/**,fixtures/**}
-esbuild.js  package.json  tsconfig.json  vitest.config.ts  .eslintrc.cjs
+esbuild.js  package.json  tsconfig.json  vitest.config.ts  eslint.config.js
 SPEC.md  README.md  CHANGELOG.md  LICENSE
 ```
 
-- **Build**: esbuild bundles to `dist/extension.js` (`platform: node`, `format: cjs`, `external: ['vscode']`, `target: 'node20'`, sourcemap).
-- **Runtime deps**: `postcss` (^8), `postcss-selector-parser` (^7), `typescript` (^5). No native modules.
-- **Dev deps**: `@types/vscode ^1.90`, `@types/node ^20`, `@types/mocha`, `esbuild`, `typescript`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint`, `typescript-eslint`.
+- **Build**: esbuild bundles to `dist/extension.js` (`platform: node`, `format: cjs`, `external: ['vscode']`, `target: 'node20'`, sourcemap). `typescript` is bundled because the extension host does not provide it, so expect a multi-MB bundle (~10 MB); **IMPLEMENTER MAY** split it into a lazily-imported chunk if size becomes a problem.
+- **Runtime deps**: `postcss` (^8), `postcss-selector-parser` (^7), `typescript` (^5; runtime + bundled only, listed here and not under dev deps), `picomatch` (^4; `excludeGlobs` matching for watcher events). No native modules.
+- **Dev deps**: `@types/vscode ^1.90`, `@types/node ^20`, `@types/mocha`, `esbuild`, `typescript`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint ^9` (flat config), `typescript-eslint ^8`.
 - **package.json essentials**: `"main": "./dist/extension.js"`, `"engines": { "vscode": "^1.90.0" }`, `"extensionKind": ["workspace"]`, activation events:
 
   ```jsonc
@@ -683,7 +709,11 @@ Definition of done for the project: all §7.4 acceptance rows pass in integratio
 | Pseudo/attr/`:not()` ignored → false positives | Documented; §7.4 rows encode the behavior. |
 | JSX hierarchy ≠ runtime DOM across components | Chains stop at components; documented; flat classes unaffected. |
 | Implied-end-tag subset incomplete | Tests for common cases (`li`, `p`, `td`); scanner is best-effort. |
-| Native CSS nesting, `@scope` unsupported | Rules skipped rather than miscompiled. |
+| Dynamic ids (`:id`, `v-bind:id`, JSX `id={x}`) treated as absent | Strict static analysis in v1; documented; avoids `#id` ancestor false positives. |
+| Svelte `class:foo` not modeled | Conditional class; documented false negative when such an element must satisfy `.foo` as an ancestor. |
+| JSX `+`/`~` never match | Sibling order across components is unreliable; strictness over approximation. |
+| No implicit `html`/`body`/`head` synthesis | Markup modeled as written; full-document fixtures required for those tags. |
+| Native CSS nesting, `@scope`, rightmost-compound-without-class selectors | Skipped rather than miscompiled (§4.2). |
 | Minified single-line CSS yields coarse ranges | Acceptable; docs link uses the rule start. |
 
 Future: link-scoped indexing, `:is()`/`:where()` expansion, `:not()` negation, go-to-definition for classes, "no matching ancestor" diagnostic/quick-fix, SCSS/LESS.
