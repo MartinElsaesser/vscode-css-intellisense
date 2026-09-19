@@ -22,6 +22,8 @@ export interface QueryOptions {
   includeNonMatching: boolean;
 }
 
+const MAX_DEFINITIONS = 32;
+
 export function rank(rule: ClassRule): number {
   const depth =
     rule.ancestors.length + (rule.subject.tag ? 1 : 0) + (rule.subject.id ? 1 : 0);
@@ -140,6 +142,40 @@ export class WorkspaceIndex {
       } else if (options.includeNonMatching && fallback) {
         results.push({ className, fallback });
       }
+    }
+    return results;
+  }
+
+  definitionsFor(
+    className: string,
+    ctx: ClassAttributeContext,
+    documentUri: string
+  ): ClassRule[] {
+    const rules = this.byClass.get(className);
+    if (!rules) return [];
+    const matching: ClassRule[] = [];
+    const rest: ClassRule[] = [];
+    for (const rule of rules) {
+      if (rule.origin === 'inline' && rule.documentUri !== documentUri) continue;
+      if (matches(rule, ctx)) matching.push(rule);
+      else rest.push(rule);
+    }
+    const sortRules = (list: ClassRule[]): ClassRule[] =>
+      list.sort(
+        (left, right) =>
+          rank(right) - rank(left) ||
+          left.sourceUri.localeCompare(right.sourceUri) ||
+          left.range.start.line - right.range.start.line ||
+          left.range.start.character - right.range.start.character
+      );
+    const seen = new Set<string>();
+    const results: ClassRule[] = [];
+    for (const rule of [...sortRules(matching), ...sortRules(rest)]) {
+      const key = `${rule.sourceUri}:${rule.range.start.line}:${rule.range.start.character}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push(rule);
+      if (results.length >= MAX_DEFINITIONS) break;
     }
     return results;
   }

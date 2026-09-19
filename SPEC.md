@@ -1,6 +1,6 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v20 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v21 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
@@ -18,6 +18,7 @@
 **Changes in v18:** LSP sweep fixes — dead `sourceFile` parameter removed from `classNameLiteral` and a default `typescript` import; flat ESLint config migrated to `defineConfig` from `eslint/config` (installed ESLint is 10.x); dev-dep line synced to `eslint ^10`.
 **Changes in v19:** pseudo-class semantics — `:not(simple)` is enforced (excluded tag/id/classes on `Compound.not`), `:is()`/`:where(simple)` alternatives are expanded into concrete selectors, and structural pseudo-classes (`:first-child`, `:last-child`, `:only-child`, `:*-of-type`, `:nth-child()`, `:nth-last-child()`, `:nth-of-type()`, `:nth-last-of-type()`, `:heading`) are evaluated against sibling data; JSX has no sibling data, so structural tests never match there (§3, §4.2, §5.1, §6.2, §7.3, §7.4, §15).
 **Changes in v20:** scope cleanup — the preprocessor-parsing item is dropped from scope entirely (neither non-goal nor future work); the §15 Future list is trimmed to the still-unimplemented items; §13 project layout synced with the actual modules (`configModel`, `importSpecifier`, `sourceRange`, `debouncer`, `indexManager`, `inlineStyles`, `vitest.config.mts`).
+**Changes in v21:** go-to-definition for classes — `WorkspaceIndex.definitionsFor()` plus a `DefinitionProvider`, returning all same-name rules with context-matching ones first (§9.4); integration `definition.test.ts`; Future list updated.
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -624,6 +625,12 @@ where `commandLink = 'command:vscode.open?' + encodeURIComponent(JSON.stringify(
 - Return `undefined` (not `[]`) when the cursor is not in a class value, to avoid suppressing other providers.
 - The built-in HTML provider and flat-class extensions may still contribute items; VS Code generally merges identical labels. The README documents this and the integration tests assert only our labels' presence/absence (not exclusivity).
 
+### 9.4 Definition provider (`src/completion/definitionProvider.ts`)
+
+- `WorkspaceIndex.definitionsFor(className, ctx, documentUri): ClassRule[]`: from the `byClass` bucket, drop `inline` rules belonging to other documents, partition by `matches(rule, ctx)`, sort both groups by `rank()` desc then `(sourceUri, range.start)`, and concatenate (matching first). Dedupe on `sourceUri + range.start`, cap at 32.
+- `CssDefinitionProvider implements vscode.DefinitionProvider` reuses `CompletionDeps`: requires `config.enabled`, a valid context, and a non-empty `ctx.partial`; returns `vscode.LocationLink[]` with `originSelectionRange = ctx.range` and `targetRange`/`targetSelectionRange = rule.range` (the whole rule starts at the selector); returns `undefined` when the class has no indexed rule.
+- Registered for the configured languages via `registerDefinitionProvider` in `activate()`. No new settings.
+
 ---
 
 ## 10. Configuration and commands
@@ -691,11 +698,12 @@ test/integration/
   run-host.js           # @vscode/test-electron runTests()
   suite/index.ts        # mocha runner (run(): Promise<void>)
   suite/completion.test.ts
+  suite/definition.test.ts
   fixtures/workspace/   # label CSS files + HTML/Vue/Svelte/TSX fixtures
 ```
 
 - Fixtures use a unique cursor marker `«cursor»`; the harness computes the offset and strips the marker before opening.
-- Assertions via `vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', uri, position)`; check label presence/absence, `range`, and `sortText` ordering; for `strictHierarchy:false`, check labels present with `zz` sort prefix.
+- Assertions via `vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', uri, position)`; check label presence/absence, `range`, and `sortText` ordering; for `strictHierarchy:false`, check labels present with `zz` sort prefix. Definition assertions use `vscode.executeDefinitionProvider` and check target URIs/lines (expected lines are read from the CSS fixtures at test time).
 - `launchArgs`: `['--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage', '--disable-workspace-trust']`; `extensionTestsPath`/`extensionDevelopmentPath` resolved from repo root.
 - `run-docker.js`:
   1. `docker info` → if it fails: print `integration tests skipped: docker unavailable` and exit 0 unless `REQUIRE_INTEGRATION=1`.
@@ -708,12 +716,13 @@ test/integration/
   "compile": "node esbuild.js",
   "test:unit": "vitest run",
   "test": "npm run compile && npm run test:unit",
-  "test:integration:suite": "npm run compile && node ./test/integration/run-host.js",
+  "test:integration:suite": "npm run compile && tsc -p test/integration/tsconfig.json && node ./test/integration/run-host.js",
   "test:integration": "node ./test/integration/run-docker.js",
-  "test:integration:host": "npm run compile && xvfb-run -a node ./test/integration/run-host.js",
+  "test:integration:host": "npm run compile && tsc -p test/integration/tsconfig.json && xvfb-run -a node ./test/integration/run-host.js",
   "lint": "eslint src test",
   "typecheck": "tsc --noEmit",
-  "package": "vsce package"
+  "package": "vsce package",
+  "install:local": "npm run compile && vsce package --out css-intellisense-local.vsix && code --install-extension ./css-intellisense-local.vsix --force"
   ```
 
 - CI (GitHub Actions): `unit` matrix ubuntu/macos/windows running `npm ci && npm run typecheck && npm run test:unit`; `integration` on ubuntu-latest running `xvfb-run -a npm run test:integration:host` (runners have Xvfb + all libs); optional Docker job mirroring `test:integration`.
@@ -747,6 +756,7 @@ src/
   html/jsxContext.ts            # JSX/TSX analyzer (§6)
   match/matcher.ts              # (§7)
   completion/provider.ts        # (§9)
+  completion/definitionProvider.ts # (§9.4)
 test/
   unit/*.test.ts
   integration/{Dockerfile,run-docker.js,run-host.js,tsconfig.json,suite/**,fixtures/**}
@@ -805,7 +815,7 @@ Definition of done for the project: all §7.4 acceptance rows pass in integratio
 | `@scope` wrapper ignored (its nested rules are processed normally) | Documented; can yield false positives; `@scope` evaluation is a non-goal (§1.3). |
 | Minified single-line CSS yields coarse ranges | Acceptable; docs link uses the rule start. |
 
-Future: link-scoped indexing, go-to-definition for classes, "no matching ancestor" diagnostic/quick-fix.
+Future: link-scoped indexing, "no matching ancestor" diagnostic/quick-fix.
 
 ---
 

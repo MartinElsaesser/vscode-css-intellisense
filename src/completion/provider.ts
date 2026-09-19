@@ -6,7 +6,7 @@ import { ClassMatch, rank, WorkspaceIndex } from '../index/workspaceIndex';
 import { subjectClasses } from '../match/matcher';
 import type { Logger } from '../log';
 
-export interface CompletionDeps {
+export interface ProviderDeps {
   getAnalysis(document: vscode.TextDocument): DocumentAnalysis | undefined;
   getIndex(document: vscode.TextDocument): WorkspaceIndex | undefined;
   getConfig(scope: vscode.Uri): CssIntellisenseConfig;
@@ -28,7 +28,7 @@ class CssCompletionItem extends vscode.CompletionItem {
   }
 }
 
-function toVscodeRange(range: SourceRange): vscode.Range {
+export function toVscodeRange(range: SourceRange): vscode.Range {
   return new vscode.Range(
     range.start.line,
     range.start.character,
@@ -42,7 +42,7 @@ function workspaceRelativePath(sourceUri: string): string {
 }
 
 export class CssCompletionProvider implements vscode.CompletionItemProvider {
-  constructor(private readonly deps: CompletionDeps) {}
+  constructor(private readonly deps: ProviderDeps) {}
 
   provideCompletionItems(
     document: vscode.TextDocument,

@@ -192,3 +192,59 @@ describe('rank', () => {
     expect(rank(ruleFor('.a .b .c .d .e .f .g .h .i .j div#x.text'))).toBe(9);
   });
 });
+
+describe('WorkspaceIndex.definitionsFor', () => {
+  it('returns matching definitions first, ranked', () => {
+    const index = new WorkspaceIndex();
+    index.apply(source('file:///w/a.css', '.text { }'));
+    index.apply(source('file:///w/b.css', 'div .text { }'));
+    index.apply(source('file:///w/c.css', 'section .text { }'));
+    const definitions = index.definitionsFor('text', ctxFor(['div']), 'file:///w/page.html');
+    expect(definitions.map((rule) => rule.sourceUri)).toEqual([
+      'file:///w/b.css',
+      'file:///w/a.css',
+      'file:///w/c.css',
+    ]);
+  });
+
+  it('falls back to non-matching definitions', () => {
+    const index = new WorkspaceIndex();
+    index.apply(source('file:///w/a.css', 'section .text { }'));
+    const definitions = index.definitionsFor('text', ctxFor(['div']), 'file:///w/page.html');
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]!.sourceUri).toBe('file:///w/a.css');
+  });
+
+  it('scopes inline definitions to their document', () => {
+    const index = new WorkspaceIndex();
+    index.replaceDocument('file:///w/page.html', [
+      source('file:///w/page.html#style:0', '.inline-class { }', {
+        origin: 'inline',
+        documentUri: 'file:///w/page.html',
+      }),
+    ]);
+    expect(index.definitionsFor('inline-class', ctxFor([]), 'file:///w/page.html')).toHaveLength(1);
+    expect(index.definitionsFor('inline-class', ctxFor([]), 'file:///w/other.html')).toHaveLength(0);
+  });
+
+  it('dedupes by source and range', () => {
+    const index = new WorkspaceIndex();
+    const parsed = source('file:///w/a.css', '.text { }');
+    const clone = { ...parsed.rules[0]! };
+    index.apply({ ...parsed, rules: [parsed.rules[0]!, clone] });
+    expect(index.definitionsFor('text', ctxFor([]), 'file:///w/page.html')).toHaveLength(1);
+  });
+
+  it('caps the number of definitions', () => {
+    const index = new WorkspaceIndex();
+    for (let i = 0; i < 40; i++) {
+      index.apply(source(`file:///w/f${i}.css`, '.many { }'));
+    }
+    expect(index.definitionsFor('many', ctxFor([]), 'file:///w/page.html')).toHaveLength(32);
+  });
+
+  it('returns nothing for unknown classes', () => {
+    const index = new WorkspaceIndex();
+    expect(index.definitionsFor('missing', ctxFor([]), 'file:///w/page.html')).toEqual([]);
+  });
+});

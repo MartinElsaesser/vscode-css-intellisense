@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { CssCompletionProvider } from './completion/provider';
+import { CssDefinitionProvider } from './completion/definitionProvider';
 import { getConfig } from './config';
 import { analyzeHtmlDocument, DocumentAnalysis, HtmlLanguage, isHtmlLanguage } from './html/analyzeHtml';
 import { analyzeJsxDocument, isJsxLanguage } from './html/jsxContext';
@@ -55,15 +56,18 @@ export function activate(context: vscode.ExtensionContext): void {
     return undefined;
   };
 
-  const provider = new CssCompletionProvider({
+  const deps = {
     getAnalysis: analysisFor,
     getIndex: indexFor,
-    getConfig: (scope) => getConfig(scope),
+    getConfig: (scope: vscode.Uri) => getConfig(scope),
     logger,
-  });
+  };
+  const provider = new CssCompletionProvider(deps);
+  const definitionProvider = new CssDefinitionProvider(deps);
 
   context.subscriptions.push(
-    vscode.languages.registerCompletionItemProvider(getConfig().languages, provider, '-', '_')
+    vscode.languages.registerCompletionItemProvider(getConfig().languages, provider, '-', '_'),
+    vscode.languages.registerDefinitionProvider(getConfig().languages, definitionProvider)
   );
 
   const maybeTriggerSuggest = (event: vscode.TextDocumentChangeEvent): void => {
