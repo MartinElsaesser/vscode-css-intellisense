@@ -39,6 +39,28 @@ function staticStringValue(
   return undefined;
 }
 
+function collectAttributes(
+  sourceFile: ts.SourceFile,
+  attributes: ts.JsxAttributes
+): { attributes: Map<string, string | undefined>; attributesUnknown: boolean } {
+  const result = new Map<string, string | undefined>();
+  let attributesUnknown = false;
+  for (const property of attributes.properties) {
+    if (ts.isJsxSpreadAttribute(property)) {
+      attributesUnknown = true;
+      continue;
+    }
+    if (!ts.isJsxAttribute(property)) continue;
+    const name = property.name.getText(sourceFile).toLowerCase();
+    const key = name === 'classname' ? 'class' : name;
+    if (result.has(key)) continue;
+    const initializer = property.initializer;
+    if (initializer && ts.isStringLiteral(initializer)) result.set(key, initializer.text);
+    else result.set(key, undefined);
+  }
+  return { attributes: result, attributesUnknown };
+}
+
 function elementSnapshot(
   sourceFile: ts.SourceFile,
   element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -46,21 +68,24 @@ function elementSnapshot(
   const tagName = ts.isJsxElement(element) ? element.openingElement.tagName : element.tagName;
   const tag = tagName.getText(sourceFile);
   if (isCapitalizedTag(tag)) return undefined;
-  const attributes = ts.isJsxElement(element) ? element.openingElement.attributes : element.attributes;
+  const attributeNodes = ts.isJsxElement(element) ? element.openingElement.attributes : element.attributes;
   const classes = new Set<string>();
-  const className = staticStringValue(sourceFile, attributes, 'className');
+  const className = staticStringValue(sourceFile, attributeNodes, 'className');
   if (className !== undefined) {
     for (const token of className.split(/\s+/)) {
       if (token) classes.add(token);
     }
   }
-  const id = staticStringValue(sourceFile, attributes, 'id');
+  const id = staticStringValue(sourceFile, attributeNodes, 'id');
+  const collected = collectAttributes(sourceFile, attributeNodes);
   return {
     tag,
     ...(id !== undefined ? { id } : {}),
     classes,
     parentChildren: [],
     indexInParent: 0,
+    attributes: collected.attributes,
+    ...(collected.attributesUnknown ? { attributesUnknown: true } : {}),
   };
 }
 
@@ -128,14 +153,15 @@ export function analyzeJsxDocument(
     )
       ? ownerOpening.parent
       : ownerOpening;
-    const subjectAttributes = ts.isJsxElement(subjectElement)
+    const subjectAttributeNodes = ts.isJsxElement(subjectElement)
       ? subjectElement.openingElement.attributes
       : subjectElement.attributes;
     const subjectTagNode = ts.isJsxElement(subjectElement)
       ? subjectElement.openingElement.tagName
       : subjectElement.tagName;
     const subjectTag = subjectTagNode.getText(sourceFile);
-    const subjectId = staticStringValue(sourceFile, subjectAttributes, 'id');
+    const subjectId = staticStringValue(sourceFile, subjectAttributeNodes, 'id');
+    const subjectCollected = collectAttributes(sourceFile, subjectAttributeNodes);
 
     const path: ElementSnapshot[] = [];
     for (let parent = subjectElement.parent; parent; parent = parent.parent) {
@@ -156,6 +182,8 @@ export function analyzeJsxDocument(
       subjectParentChildren: [],
       subjectIndexInParent: 0,
       siblingDataAvailable: false,
+      subjectAttributes: subjectCollected.attributes,
+      ...(subjectCollected.attributesUnknown ? { subjectAttributesUnknown: true } : {}),
     };
   };
 

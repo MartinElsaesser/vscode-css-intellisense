@@ -1,6 +1,6 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v21 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v22 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
@@ -19,6 +19,7 @@
 **Changes in v19:** pseudo-class semantics — `:not(simple)` is enforced (excluded tag/id/classes on `Compound.not`), `:is()`/`:where(simple)` alternatives are expanded into concrete selectors, and structural pseudo-classes (`:first-child`, `:last-child`, `:only-child`, `:*-of-type`, `:nth-child()`, `:nth-last-child()`, `:nth-of-type()`, `:nth-last-of-type()`, `:heading`) are evaluated against sibling data; JSX has no sibling data, so structural tests never match there (§3, §4.2, §5.1, §6.2, §7.3, §7.4, §15).
 **Changes in v20:** scope cleanup — the preprocessor-parsing item is dropped from scope entirely (neither non-goal nor future work); the §15 Future list is trimmed to the still-unimplemented items; §13 project layout synced with the actual modules (`configModel`, `importSpecifier`, `sourceRange`, `debouncer`, `indexManager`, `inlineStyles`, `vitest.config.mts`).
 **Changes in v21:** go-to-definition for classes — `WorkspaceIndex.definitionsFor()` plus a `DefinitionProvider`, returning all same-name rules with context-matching ones first (§9.4); integration `definition.test.ts`; Future list updated.
+**Changes in v22:** attribute selectors are enforced — `Compound.attributes` records `[attr]`/`[attr op value]` tests (operators `=`, `~=`, `|=`, `^=`, `$=`, `*=`, plus the `i` flag; the parser rejects the non-standard `!=`); the HTML scanner and JSX analyzer collect element attributes (dynamic values become present-with-unknown-value, JSX spreads mark the element's attribute set unknown); matcher policy defined in §7.3 and §7.4. `:has()`, `:empty`, `:root`, `:lang()`, `:dir()`, `:heading()`, `:scope`, complex `:not()`/`:is()`/`:where()` arguments and pseudo-elements stay ignored (§1.3, §15).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -48,7 +49,7 @@ Editors suggest every class found in any stylesheet. With hierarchical selectors
 
 ### 1.3 Non-goals (v1)
 
-Cascade/specificity resolution; dynamic classes (Vue `:class`, Svelte `class:foo`/`{expr}`, JSX `{expr}`); CSS-in-JS and CSS Modules name mapping; attribute selectors, `:has()`, `:empty`, `:root`, and pseudo-classes beyond the supported set in §4.2; `@scope`; resolving remote `@import`; go-to-definition/hover/validation (future work).
+Cascade/specificity resolution; dynamic classes (Vue `:class`, Svelte `class:foo`/`{expr}`, JSX `{expr}`); CSS-in-JS and CSS Modules name mapping; `:has()`, `:empty`, `:root`, `:lang()`, `:dir()`, `:heading()`, `:scope`, and pseudo-classes/pseudo-elements beyond the supported set in §4.2; `@scope`; resolving remote `@import`; hover/validation and the "no matching ancestor" diagnostic (future work).
 
 ### 1.4 Prior art
 
@@ -88,10 +89,20 @@ export interface StructuralTest {
   nth?: { a: number; b: number };  // present for nth-* kinds
 }
 
+export type AttributeOperator = '' | '=' | '~=' | '|=' | '^=' | '$=' | '*=';
+
+export interface AttributeTest {
+  name: string;              // lowercased
+  operator: AttributeOperator; // '' = presence
+  value?: string;            // absent for presence tests
+  caseInsensitive?: boolean; // `i` flag
+}
+
 export interface Compound {
   tag?: string;                    // lowercased; undefined = no tag constraint
   id?: string;                     // exact match; undefined = no constraint
   classes: string[];               // exact, case-sensitive; empty = no constraint
+  attributes?: AttributeTest[];    // attribute presence/value tests
   not?: Compound[];                // simple compounds that must NOT match (`:not(...)`)
   structural?: StructuralTest[];   // sibling-position constraints
 }
@@ -198,7 +209,7 @@ Synchronous, no I/O. Import resolution happens later (§8.3) so this function st
    | `:not(...)` | record every simple-compound argument in `not` (excluded); if any argument is not a simple compound the whole `:not` is ignored rather than miscompiled |
    | `:is(...)` / `:where(...)` | expand into one concrete selector per simple-compound alternative before compilation (cartesian across pseudos, same cap as nesting resolution); alternatives containing combinators or other pseudos leave the pseudo ignored |
    | structural (`:first-child`, `:last-child`, `:only-child`, `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-child()`, `:nth-last-child()`, `:nth-of-type()`, `:nth-last-of-type()`, `:heading`) | record a `StructuralTest`; An+B is parsed from the raw argument text (`odd`, `even`, `An+B`, integers); unparsable arguments leave the pseudo ignored |
-   | `attribute` | ignore (an attribute-only compound constrains nothing) |
+   | `attribute` | record an `AttributeTest` (name lowercased; `operator` from the node, `''` for presence; `value` and `insensitive` copied); namespaced attributes are ignored |
    | `nesting` (`&`) | **skip the whole selector** (only reachable for pseudo-nested `&`, which is ignored anyway) |
    | `comment` | ignore |
    | `string` | ignore (only occurs inside attributes) |
@@ -243,7 +254,7 @@ For each `atRule.name.toLowerCase() === 'import'`, accept only local file specif
 - Top-level `&:hover` / `& .text` → skipped.
 - `div .text, section .text` → two rules for `text` (union semantics).
 - `.foo\:bar` (Tailwind variant) → `className === 'foo:bar'`; escapes use the parser's decoded `value`.
-- `[data-x] .text` → ancestor compound with no constraints (attribute stripped).
+- `[data-x] .text` → ancestor must carry a `data-x` attribute; `[data-x="1"]`, `[data-role~="tab"]`, `[data-x^="y" i]` compare values/flags per §7.3.
 - `.a:hover .text` → ancestor `.a` (pseudo stripped), not unconstrained.
 - `.a > * .text` → unconstrained child compound, then `.a` descendant.
 - `@media (min-width: 40em) { div .text {} }` → parsed, no media effect.
@@ -265,6 +276,8 @@ export interface ElementSnapshot {
   classes: ReadonlySet<string>;
   parentChildren: readonly ElementSnapshot[];  // shared sibling list, document order
   indexInParent: number;                    // position inside parentChildren
+  attributes?: ReadonlyMap<string, string | undefined>; // static values; undefined = present but dynamic/unknown
+  attributesUnknown?: boolean;              // JSX spread: the whole attribute set is unknown
 }
 
 export interface ClassAttributeContext {
@@ -278,6 +291,8 @@ export interface ClassAttributeContext {
   subjectParentChildren: readonly ElementSnapshot[];
   subjectIndexInParent: number;
   siblingDataAvailable: boolean; // false in JSX (no sibling order); structural pseudos then fail
+  subjectAttributes?: ReadonlyMap<string, string | undefined>;
+  subjectAttributesUnknown?: boolean;
 }
 
 export interface DocumentAnalysis {
@@ -307,7 +322,7 @@ Rules:
 - On `</name>`: pop until matching tag (case-insensitive); if no match, ignore.
 - On `>` inside quoted attr value: not a tag end. On unquoted attr value: `>` ends both value and tag.
 - `script` content is skipped entirely (allows `<` in strings). `style` content is skipped for structure and captured as an inline style block (§8.2). `textarea` content is skipped.
-- Attribute parsing: name is case-insensitive; `class` matches for HTML/Vue/Svelte. `className` is handled only by the JSX analyzer (§6).
+- Attribute parsing: name is case-insensitive; `class` matches for HTML/Vue/Svelte. `className` is handled only by the JSX analyzer (§6). Every start-tag attribute is also recorded on the element snapshot (name lowercased, boolean attributes → `''`, first duplicate wins). Vue `:x`/`v-bind:x` and Svelte/interpolated values (`{…}`) record the attribute as present with an unknown value; event/slot directives are not attributes and are skipped.
 - Cursor inside a `class` value:
   - value bounds from quote or unquoted terminators;
   - `partial` = maximal run of characters around the cursor not in `{whitespace, '"', "'", '>', '<', '=', '`'}` clamped to value bounds;
@@ -362,6 +377,7 @@ Returns the same `DocumentAnalysis` shape as §5.1 with `styleBlocks: []`; it is
    - **capitalized tags (components) are skipped entirely** (not pushed into `path`); their rendered DOM is unknowable, so hierarchy chains do not cross component boundaries (documented).
 6. **Sibling combinators never match in JSX, at any level.** Every snapshot built here — subject and ancestors — gets `parentChildren: []`, `indexInParent: 0`, so the matcher naturally fails `+`/`~` requirements. Rationale: JSX sibling order only approximates DOM sibling order (components may render wrappers), and strict mode prefers false negatives. Do not special-case.
 7. **Structural pseudo-classes never match in JSX.** Contexts carry `siblingDataAvailable: false`; sibling-position tests (`:first-child`, `:nth-child()`, `:*-of-type`, …) fail rather than approximate — same rationale as (6). `:not()` still applies to tags/ids/classes.
+8. **Attributes**: static string-literal attributes are captured on snapshots (names lowercased; `className` maps to `class`); dynamic initializers (`{…}`, expressions) record the name with an unknown value; a `{...spread}` sets `attributesUnknown` for that element, so every attribute test passes (wildcard, §7.3).
 
 ### 6.3 Scope
 
@@ -416,7 +432,7 @@ matches(rule, ctx):
 
 ```ts
 function compoundMatches(c: Compound, el: ElementSnapshot): boolean {
-  if (!simpleCompoundMatches(c, el)) return false;
+  if (!simpleCompoundMatches(c, el)) return false;          // tag/id/classes/attributes
   for (const excluded of c.not ?? []) {
     if (simpleCompoundMatches(excluded, el)) return false;  // :not(...) enforcement
   }
@@ -447,7 +463,8 @@ function subjectMatches(subject: Compound, ctx: ClassAttributeContext): boolean 
 
 - Structural positions are 1-based for An+B (`:nth-child(2n + 1)`, `odd` = `2n+1`, `even` = `2n`); `:nth-last-*` counts from the end; `*-of-type` compares tag names; `:heading` matches `h1`–`h6`.
 - `:not()`/structural arguments that cannot be represented are ignored rather than miscompiled; complex `:is()`/`:where()` alternatives are likewise ignored (§4.2).
-- For JSX (`siblingDataAvailable: false`) structural tests fail; `:not()` still applies to class/id/tag constraints.
+- Attribute tests: `attributesUnknown` (JSX spread) or a snapshot without attribute data ⇒ every attribute test passes (wildcard); presence passes iff the key exists (dynamic values count as present); comparisons require a known value (absent or dynamic values fail); `i` lowercases both sides; `~=` splits on whitespace; `|=` is exact-or-dash-prefix; `^=`/`$=`/`*=` are string ops. Subject-side tests use `ctx.subjectAttributes`/`subjectAttributesUnknown` with the same rules.
+- For JSX (`siblingDataAvailable: false`) structural tests fail; `:not()` and attribute tests still apply (with the spread wildcard above).
 
 - Unknown **subject** tag/id (undefined) ⇒ wildcard, not a failure — the user may still be typing them.
 - For **ancestors**, a missing `id` is a known absence: `#main .text` does not match `<main>` without `id="main"`. Dynamic ids (`:id`, `v-bind:id`, JSX `id={x}`) are also treated as absent in v1 (see §15).
@@ -480,7 +497,15 @@ Cursor position is marked `▮`.
 | `#main .text` | `<main id="other"><p class="**▮**">` | no match |
 | `#main .text` | `<main><p class="**▮**">` (no id attr) | no match (missing id is a known absence) |
 | `.a:hover .text` | `<p class="a"><span class="**▮**">` | match (pseudo ignored) |
-| `[data-x] .text` | `<p><span class="**▮**">` | match (attr ignored) |
+| `[data-x] .text` | `<p data-x><span class="**▮**">` | match |
+| `[data-x] .text` | `<p><span class="**▮**">` | no match (attribute absent) |
+| `[data-role~="tab"] .text` | `<div data-role="tab primary"><span class="**▮**">` | match |
+| `[data-role~="tab"] .text` | `<div data-role="tabprimary"><span class="**▮**">` | no match |
+| `[data-state="open"] .text` | `<section data-state="open"><p class="**▮**">` | match |
+| `[data-state="open"] .text` | Vue `<section :data-state="s"><p class="**▮**">` | no match (value unknown) |
+| `[data-state] .text` | Vue `<section :data-state="s"><p class="**▮**">` | match (present) |
+| `.panel-body[aria-hidden="false"]` | subject element carrying both | match |
+| `[data-role="tab" i] .text` | `<div data-role="TAB">` | match (`i` flag) |
 | `.a:not(.b) .text` | `<p class="a b"><span class="**▮**">` | no match (`:not()` enforced) |
 | `.a:not(.b) .text` | `<p class="a"><span class="**▮**">` | match |
 | `:not(.a) .text` | `<p class="a"><span class="**▮**">` | no match |
@@ -687,6 +712,7 @@ Rules: no CSS parsing inside `provideCompletionItems`; the import resolver is me
 - JSX tests: `className="a |b"`, `className={"a |b"}`, dynamic `className={x}` (no context), component ancestors, `+`/`~` never match at subject or ancestor level.
 - Parser tests: all §4.4 cases, including native-nesting resolution (implicit, relative, `&`, recursion, cross-product, at-rule pass-through), `:not()` simple/complex arguments, `:is()`/`:where()` expansion, structural parsing (`odd`/`even`/`An+B`/invalid), and rightmost-compound-without-class skip; a malformed selector alongside valid ones yields the valid rules and one logged error.
 - Config tests: the zod schema's defaults are validated against `package.json`'s `contributes.configuration` (a drift guard, and the only external file read in unit tests); malformed values fall back per field.
+- Attribute tests: parser operators (`=`, `~=`, `|=`, `^=`, `$=`, `*=`, `i`, namespaced-ignored, `!=` rejected by the parser); scanner collection (boolean attrs, case-insensitive names, dynamic Vue/Svelte values); JSX static/dynamic/spread; matcher policy (presence/absence, dynamic values, spread wildcard, subject-side).
 - Import resolver: relative paths, inline-style base URI, cycles, depth cap, remote rejection, missing file.
 
 ### 12.2 Integration tests (headless Docker, default)
@@ -802,7 +828,8 @@ Definition of done for the project: all §7.4 acceptance rows pass in integratio
 | Auto-trigger after quote is a workaround | Guarded, configurable, Ctrl+Space always works. |
 | Duplicate items with built-in/HTML-class extensions | Verified in integration tests that our labels appear; README documents overlap; `filterText` adjustable. |
 | Workspace-wide index yields cross-project false candidates | Strict matching mitigates; link-scoped mode (only `<link>`-reachable CSS) is planned. |
-| Pseudos/attributes outside the supported set (`:has()`, `:empty`, `:root`, attribute selectors) → false positives | Ignored (stripped), documented; §7.4 rows encode the behavior. |
+| Pseudos outside the supported set (`:has()`, `:empty`, `:root`, `:lang()`, `:dir()`, `:heading()`, `:scope`, pseudo-elements) → false positives | Ignored (stripped), documented; §7.4 rows encode the behavior. |
+| Dynamic attribute values (`:data-x`, `data-x={expr}`) and JSX spreads | Presence passes, comparisons fail, spread = wildcard (§7.3). |
 | `:not()` arguments that are not simple compounds; complex `:is()`/`:where()` alternatives; structural tests in JSX | Ignored rather than miscompiled (§4.2, §6.2). |
 | JSX hierarchy ≠ runtime DOM across components | Chains stop at components; documented; flat classes unaffected. |
 | Implied-end-tag subset incomplete | Tests for common cases (`li`, `p`, `td`); scanner is best-effort. |

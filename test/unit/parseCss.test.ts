@@ -90,8 +90,34 @@ describe('parseCss — selector compilation', () => {
     expect(rulesFor('.foo\\:bar { }', 'foo:bar')).toHaveLength(1);
   });
 
-  it('turns attribute-only compounds into unconstrained compounds', () => {
+  it('records attribute constraints', () => {
     const rule = rulesFor('[data-x] .text { }', 'text')[0]!;
+    expect(rule.ancestors[0]!.compound).toEqual({
+      tag: undefined,
+      id: undefined,
+      classes: [],
+      attributes: [{ name: 'data-x', operator: '' }],
+    });
+    const equality = rulesFor('[data-state="open"] .text { }', 'text')[0]!;
+    expect(equality.ancestors[0]!.compound.attributes).toEqual([
+      { name: 'data-state', operator: '=', value: 'open' },
+    ]);
+    const word = rulesFor('[data-role~="tab"] .text { }', 'text')[0]!;
+    expect(word.ancestors[0]!.compound.attributes).toEqual([
+      { name: 'data-role', operator: '~=', value: 'tab' },
+    ]);
+    const substring = rulesFor('[href*="admin"] .text { }', 'text')[0]!;
+    expect(substring.ancestors[0]!.compound.attributes).toEqual([
+      { name: 'href', operator: '*=', value: 'admin' },
+    ]);
+    const insensitive = rulesFor('[data-role="tab" i] .text { }', 'text')[0]!;
+    expect(insensitive.ancestors[0]!.compound.attributes).toEqual([
+      { name: 'data-role', operator: '=', value: 'tab', caseInsensitive: true },
+    ]);
+  });
+
+  it('ignores namespaced attributes and keeps other parts', () => {
+    const rule = rulesFor('[svg|href] .text { }', 'text')[0]!;
     expect(rule.ancestors[0]!.compound).toEqual({
       tag: undefined,
       id: undefined,

@@ -1,6 +1,36 @@
 
-import { ClassRule, Compound, StructuralTest } from '../css/selectorModel';
+import { AttributeTest, ClassRule, Compound, StructuralTest } from '../css/selectorModel';
 import { ClassAttributeContext, ElementSnapshot } from '../html/analyzeHtml';
+
+function attributeTestMatches(
+  test: AttributeTest,
+  attributes: ReadonlyMap<string, string | undefined> | undefined,
+  attributesUnknown: boolean | undefined
+): boolean {
+  if (attributesUnknown || !attributes) return true;
+  const present = attributes.has(test.name);
+  if (test.operator === '') return present;
+  const value = attributes.get(test.name);
+  if (!present || value === undefined || test.value === undefined) return false;
+  const expected = test.caseInsensitive ? test.value.toLowerCase() : test.value;
+  const actual = test.caseInsensitive ? value.toLowerCase() : value;
+  switch (test.operator) {
+    case '=':
+      return actual === expected;
+    case '~=':
+      return actual.split(/\s+/).includes(expected);
+    case '|=':
+      return actual === expected || actual.startsWith(`${expected}-`);
+    case '^=':
+      return actual.startsWith(expected);
+    case '$=':
+      return actual.endsWith(expected);
+    case '*=':
+      return actual.includes(expected);
+    default:
+      return false;
+  }
+}
 
 export function subjectClasses(ctx: ClassAttributeContext): Set<string> {
   const used = new Set(ctx.value.split(/\s+/).filter(Boolean));
@@ -13,6 +43,9 @@ function simpleCompoundMatches(compound: Compound, element: ElementSnapshot): bo
   if (compound.id && compound.id !== element.id) return false;
   for (const className of compound.classes) {
     if (!element.classes.has(className)) return false;
+  }
+  for (const test of compound.attributes ?? []) {
+    if (!attributeTestMatches(test, element.attributes, element.attributesUnknown)) return false;
   }
   return true;
 }
@@ -122,6 +155,11 @@ function subjectExcludedMatches(
   for (const className of compound.classes) {
     if (!classes.has(className)) return false;
   }
+  for (const test of compound.attributes ?? []) {
+    if (!attributeTestMatches(test, ctx.subjectAttributes, ctx.subjectAttributesUnknown)) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -132,6 +170,11 @@ export function subjectMatches(subject: Compound, ctx: ClassAttributeContext): b
     const classes = subjectClasses(ctx);
     for (const excluded of subject.not) {
       if (subjectExcludedMatches(excluded, ctx, classes)) return false;
+    }
+  }
+  for (const test of subject.attributes ?? []) {
+    if (!attributeTestMatches(test, ctx.subjectAttributes, ctx.subjectAttributesUnknown)) {
+      return false;
     }
   }
   for (const test of subject.structural ?? []) {

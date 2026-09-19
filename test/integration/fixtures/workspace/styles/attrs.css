@@ -1,0 +1,5 @@
+[data-state="open"] .panel-title { color: red; }
+[data-state] .state-badge { color: red; }
+[data-role~="tab"] .tab-label { color: red; }
+.panel-body[aria-hidden="false"] { color: red; }
+[data-role="TAB" i] .insensitive-label { color: red; }

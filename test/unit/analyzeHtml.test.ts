@@ -209,3 +209,39 @@ describe('analyzeHtml — version and cacheability', () => {
     expect(analysis.contextAt(13)).toBeDefined();
   });
 });
+
+describe('analyzeHtml — attribute collection', () => {
+  it('collects static attributes with lowercased names', () => {
+    const ctx = context('<DIV DATA-X="1" data-y disabled><span class="|x"></span></DIV>')!;
+    const attributes = ctx.path[0]!.attributes!;
+    expect(attributes.get('data-x')).toBe('1');
+    expect(attributes.get('data-y')).toBe('');
+    expect(attributes.get('disabled')).toBe('');
+    expect(attributes.has('missing')).toBe(false);
+  });
+
+  it('marks Vue/Svelte dynamic values as present with unknown value', () => {
+    const vue = context('<div :data-state="s" data-static="x" v-bind:data-bind="b"><span class="|x"></span></div>', 'vue')!;
+    const attributes = vue.path[0]!.attributes!;
+    expect(attributes.get('data-state')).toBeUndefined();
+    expect(attributes.has('data-state')).toBe(true);
+    expect(attributes.get('data-static')).toBe('x');
+    expect(attributes.get('data-bind')).toBeUndefined();
+    const svelte = context('<div data-state={s}><span class="|x"></span></div>', 'svelte')!;
+    expect(svelte.path[0]!.attributes!.get('data-state')).toBeUndefined();
+    expect(svelte.path[0]!.attributes!.has('data-state')).toBe(true);
+  });
+
+  it('exposes subject attributes', () => {
+    const ctx = context('<div aria-hidden="false" class="panel-|body"></div>')!;
+    expect(ctx.subjectAttributes!.get('aria-hidden')).toBe('false');
+    expect(ctx.subjectAttributesUnknown).toBe(false);
+  });
+
+  it('ignores event and slot directives', () => {
+    const ctx = context('<div @click="go" #slot><span class="|x"></span></div>', 'vue')!;
+    const attributes = ctx.path[0]!.attributes!;
+    expect(attributes.has('@click')).toBe(false);
+    expect(attributes.has('#slot')).toBe(false);
+  });
+});

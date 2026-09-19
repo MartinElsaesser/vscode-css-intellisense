@@ -18,10 +18,20 @@ export interface StructuralTest {
   nth?: { a: number; b: number };
 }
 
+export type AttributeOperator = '' | '=' | '~=' | '|=' | '^=' | '$=' | '*=';
+
+export interface AttributeTest {
+  name: string;
+  operator: AttributeOperator;
+  value?: string;
+  caseInsensitive?: boolean;
+}
+
 export interface Compound {
   tag?: string;
   id?: string;
   classes: string[];
+  attributes?: AttributeTest[];
   not?: Compound[];
   structural?: StructuralTest[];
 }

@@ -25,6 +25,10 @@ selector's ancestor requirements match the element's statically known context:
   `:nth-last-child()`, `:nth-of-type()`, `:nth-last-of-type()`, `:heading`)
   and **`:not()`** for simple compounds, and expands **`:is()`/`:where()`**
   alternatives. State pseudos like `:hover` are ignored.
+- Enforces attribute selectors (`[attr]`, `[attr="v"]`, `~=`, `|=`, `^=`,
+  `$=`, `*=`, plus the `i` flag) against static markup attributes — including
+  Vue/Svelte dynamic values (present with unknown value) and JSX spreads
+  (whole set unknown → wildcard).
 - Resolves native CSS nesting (implicit `& ` descendant, relative selectors,
   `&` substitution, comma cross-products) before matching.
 - Hover/inspect detail shows the matching selector and its stylesheet; the
@@ -62,11 +66,10 @@ Commands: `CSS Intellisense: Rebuild Index` and `CSS Intellisense: Show Index St
 - Because VS Code merges completion providers, the built-in HTML provider or
   flat class-name extensions may still contribute items alongside this one.
 - Pseudo-classes outside the supported set (`:has()`, `:empty`, `:root`,
-  pseudo-elements, …) and attribute selectors are ignored for matching, so
-  `[data-x] .text` is treated like `* .text`. `:not()`/`:is()`/`:where()` with
-  complex arguments (combinators, nested pseudos) are ignored rather than
-  guessed at, and structural pseudo-classes never match in JSX (no sibling
-  order).
+  `:lang()`, `:dir()`, `:heading()`, pseudo-elements, …) are ignored for
+  matching. `:not()`/`:is()`/`:where()` with complex arguments (combinators,
+  nested pseudos) are ignored rather than guessed at, and structural
+  pseudo-classes never match in JSX (no sibling order).
 - Dynamic classes (`:class`, Svelte `class:foo`/expressions, JSX `{expr}`) are
   not modeled. JSX chains stop at components, and sibling combinators never
   match in JSX because component-rendered DOM structure is unknowable.

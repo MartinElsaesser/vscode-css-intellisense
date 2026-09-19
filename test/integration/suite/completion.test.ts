@@ -141,6 +141,33 @@ suite('Completion matrix (HTML)', () => {
     }
   });
 
+  test('enforces attribute selectors', async () => {
+    const cases: [string, string, boolean][] = [
+      ['matrix/attrs-open.html', 'panel-title', true],
+      ['matrix/attrs-open.html', 'state-badge', true],
+      ['matrix/attrs-closed.html', 'panel-title', false],
+      ['matrix/attrs-closed.html', 'state-badge', true],
+      ['matrix/attrs-missing.html', 'panel-title', false],
+      ['matrix/attrs-missing.html', 'state-badge', false],
+      ['matrix/attrs-role.html', 'tab-label', true],
+      ['matrix/attrs-subject.html', 'panel-body', true],
+      ['matrix/attrs-subject-missing.html', 'panel-body', false],
+      ['matrix/attrs-insensitive.html', 'insensitive-label', true],
+    ];
+    for (const [fixture, className, expected] of cases) {
+      const { document, position } = await openFixture(fixture);
+      if (expected) {
+        await waitFor(
+          async () => find(await completionsAt(document, position), className) !== undefined
+        );
+      } else {
+        const items = await completionsAt(document, position);
+        assert.ok(find(items, 'bare'), `${fixture}: positive control`);
+        assert.ok(!find(items, className), `${fixture}: did not expect \`${className}\``);
+      }
+    }
+  });
+
   test('covers the remaining acceptance matrix rows', async () => {
     const cases: [string, string, boolean][] = [
       ['matrix/sibling-general.html', 'general', true],
@@ -150,7 +177,8 @@ suite('Completion matrix (HTML)', () => {
       ['matrix/nested-wrong.html', 'nested', false],
       ['matrix/id-wrong.html', 'hashed', false],
       ['matrix/pseudo.html', 'pseudo', true],
-      ['matrix/attr.html', 'attr', true],
+      ['matrix/attr.html', 'attr', false],
+      ['matrix/attr-match.html', 'attr', true],
       ['matrix/notpseudo.html', 'notpseudo', false],
       ['matrix/notpseudo-match.html', 'notpseudo', true],
       ['matrix/mixed.html', 'mixed', true],

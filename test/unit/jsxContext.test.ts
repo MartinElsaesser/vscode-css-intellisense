@@ -93,3 +93,32 @@ describe('analyzeJsxDocument', () => {
     expect(analysis.styleBlocks).toEqual([]);
   });
 });
+
+describe('analyzeJsxDocument — attributes', () => {
+  it('collects static attributes and maps className to class', () => {
+    const ctx = context('const x = <div data-state="open" className="a b"><p className="|x"></p></div>;')!;
+    const attributes = ctx.path[0]!.attributes!;
+    expect(attributes.get('data-state')).toBe('open');
+    expect(attributes.get('class')).toBe('a b');
+    expect(ctx.path[0]!.attributesUnknown).toBeFalsy();
+  });
+
+  it('records dynamic initializers as present with unknown value', () => {
+    const ctx = context('const x = <div aria-hidden={value}><p className="|x"></p></div>;')!;
+    const attributes = ctx.path[0]!.attributes!;
+    expect(attributes.has('aria-hidden')).toBe(true);
+    expect(attributes.get('aria-hidden')).toBeUndefined();
+  });
+
+  it('marks spreads as an unknown attribute set', () => {
+    const ctx = context('const x = <div {...props} data-x="1"><p className="|x"></p></div>;')!;
+    expect(ctx.path[0]!.attributesUnknown).toBe(true);
+    const subject = context('const x = <div {...props} className="|x" />;')!;
+    expect(subject.subjectAttributesUnknown).toBe(true);
+  });
+
+  it('exposes subject attributes', () => {
+    const ctx = context('const x = <div className="a" data-state="open" className="|x" />;')!;
+    expect(ctx.subjectAttributes!.get('data-state')).toBe('open');
+  });
+});

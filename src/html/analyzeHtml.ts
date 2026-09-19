@@ -2,11 +2,13 @@ import { SourceRange, StyleBlock } from '../css/selectorModel';
 import { computeLineStarts, rangeFromOffsets } from '../css/sourceRange';
 
 export interface ElementSnapshot {
-  tag: string;
+  tag: string;                              // lowercase
   id?: string;
   classes: ReadonlySet<string>;
   parentChildren: readonly ElementSnapshot[];
   indexInParent: number;
+  attributes?: ReadonlyMap<string, string | undefined>;
+  attributesUnknown?: boolean;
 }
 
 export interface ClassAttributeContext {
@@ -20,6 +22,8 @@ export interface ClassAttributeContext {
   subjectParentChildren: readonly ElementSnapshot[];
   subjectIndexInParent: number;
   siblingDataAvailable: boolean;
+  subjectAttributes?: ReadonlyMap<string, string | undefined>;
+  subjectAttributesUnknown?: boolean;
 }
 
 export interface DocumentAnalysis {
@@ -43,6 +47,7 @@ interface ElementNode {
   children: ElementNode[];
   parentChildren: ElementNode[];
   indexInParent: number;
+  attributes: Map<string, string | undefined>;
 }
 
 interface ClassOccurrence {
@@ -55,6 +60,7 @@ interface ClassOccurrence {
   path: ElementNode[];
   subjectParentChildren: ElementNode[];
   subjectIndexInParent: number;
+  attributes: Map<string, string | undefined>;
 }
 
 const VOID_ELEMENTS = new Set([
@@ -224,6 +230,7 @@ export function analyzeHtmlDocument(
     let occurrence: ClassOccurrence | undefined;
     let selfClosing = false;
     let tagClosed = false;
+    const attributes = new Map<string, string | undefined>();
 
     while (position < length) {
       while (position < length && isWhitespace(text[position]!)) position++;
@@ -286,6 +293,19 @@ export function analyzeHtmlDocument(
         attributeName.includes('{') ||
         value.includes('{');
 
+      const bound = attributeName.startsWith(':') || attributeLower.startsWith('v-bind:');
+      const attributeKey = bound
+        ? attributeLower.replace(/^:|^v-bind:/, '')
+        : attributeLower.startsWith('@') ||
+            attributeLower.startsWith('#') ||
+            attributeLower.startsWith('v-on:') ||
+            attributeName.includes('{')
+          ? undefined
+          : attributeLower;
+      if (attributeKey && !attributes.has(attributeKey)) {
+        attributes.set(attributeKey, bound || value.includes('{') ? undefined : value);
+      }
+
       if (attributeLower === 'id' && !idSeen) {
         idSeen = true;
         if (dynamic) idDynamic = true;
@@ -302,6 +322,7 @@ export function analyzeHtmlDocument(
           path: [],
           subjectParentChildren: [],
           subjectIndexInParent: 0,
+          attributes,
         };
       }
     }
@@ -331,6 +352,7 @@ export function analyzeHtmlDocument(
         children: [],
         parentChildren,
         indexInParent: parentChildren.length,
+        attributes,
       };
       parentChildren.push(node);
       stack.push({ tag, node });
@@ -401,6 +423,8 @@ export function analyzeHtmlDocument(
         subjectParentChildren: occurrence.subjectParentChildren,
         subjectIndexInParent: occurrence.subjectIndexInParent,
         siblingDataAvailable: true,
+        subjectAttributes: occurrence.attributes,
+        subjectAttributesUnknown: false,
       };
     }
     return undefined;

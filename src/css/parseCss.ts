@@ -1,8 +1,15 @@
 import postcss, { AtRule, Node, Rule } from 'postcss';
-import selectorParser, { Node as SelectorNode, Pseudo, Selector } from 'postcss-selector-parser';
+import selectorParser, {
+  Attribute,
+  Node as SelectorNode,
+  Pseudo,
+  Selector,
+} from 'postcss-selector-parser';
 import { extractImportSpecifier } from './importSpecifier';
 import {
   AncestorRequirement,
+  AttributeOperator,
+  AttributeTest,
   ClassRule,
   Combinator,
   Compound,
@@ -49,6 +56,7 @@ interface MutableCompound {
   tag?: string;
   id?: string;
   classes: string[];
+  attributes: AttributeTest[];
   not: Compound[];
   structural: StructuralTest[];
 }
@@ -68,9 +76,22 @@ function finalizeCompound(compound: MutableCompound): Compound {
     id: compound.id,
     classes: compound.classes,
   };
+  if (compound.attributes.length > 0) result.attributes = compound.attributes;
   if (compound.not.length > 0) result.not = compound.not;
   if (compound.structural.length > 0) result.structural = compound.structural;
   return result;
+}
+
+function attributeTestFrom(node: Attribute): AttributeTest | undefined {
+  if (node.namespace) return undefined;
+  const name = node.attribute.toLowerCase();
+  const operator = (node.operator ?? '') as AttributeOperator;
+  const value = node.value;
+  if (operator !== '' && value === undefined) return undefined;
+  const test: AttributeTest = { name, operator };
+  if (value !== undefined) test.value = value;
+  if (node.insensitive) test.caseInsensitive = true;
+  return test;
 }
 
 function toRange(node: Rule | AtRule): SourceRange {
@@ -231,7 +252,7 @@ function nthArguments(node: Pseudo): { a: number; b: number } | undefined {
 }
 
 function simpleCompoundFrom(selector: Selector): Compound | undefined {
-  const compound: MutableCompound = { classes: [], not: [], structural: [] };
+  const compound: MutableCompound = { classes: [], attributes: [], not: [], structural: [] };
   for (const node of selector.nodes) {
     switch (node.type) {
       case 'tag':
@@ -245,6 +266,11 @@ function simpleCompoundFrom(selector: Selector): Compound | undefined {
         if (node.value === '') return undefined;
         compound.id = node.value;
         break;
+      case 'attribute': {
+        const test = attributeTestFrom(node);
+        if (test) compound.attributes.push(test);
+        break;
+      }
       case 'universal':
         break;
       default:
@@ -364,7 +390,7 @@ function compileSelector(
       current = undefined;
       continue;
     }
-    if (!current) current = { classes: [], not: [], structural: [] };
+    if (!current) current = { classes: [], attributes: [], not: [], structural: [] };
     switch (node.type) {
       case 'tag':
         current.tag = node.value.toLowerCase();
@@ -377,6 +403,11 @@ function compileSelector(
         if (node.value === '') malformed = true;
         else current.id = node.value;
         break;
+      case 'attribute': {
+        const test = attributeTestFrom(node);
+        if (test) current.attributes.push(test);
+        break;
+      }
       case 'pseudo':
         handlePseudo(current, node);
         break;

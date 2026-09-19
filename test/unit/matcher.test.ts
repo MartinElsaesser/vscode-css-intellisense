@@ -8,6 +8,8 @@ interface ElDef {
   tag: string;
   id?: string;
   classes?: string[];
+  attributes?: Record<string, string | undefined>;
+  attributesUnknown?: boolean;
   children?: ElDef[];
 }
 
@@ -25,6 +27,10 @@ function build(defs: ElDef[]): Map<ElDef, ElementSnapshot> {
         tag: def.tag,
         ...(def.id !== undefined ? { id: def.id } : {}),
         classes: new Set(def.classes ?? []),
+        ...(def.attributes !== undefined
+          ? { attributes: new Map(Object.entries(def.attributes)) }
+          : {}),
+        ...(def.attributesUnknown ? { attributesUnknown: true } : {}),
         parentChildren,
         indexInParent: index,
       };
@@ -54,6 +60,8 @@ function ctxFor(
     subjectParentChildren: snapshot.parentChildren,
     subjectIndexInParent: snapshot.indexInParent,
     siblingDataAvailable: true,
+    subjectAttributes: snapshot.attributes,
+    ...(snapshot.attributesUnknown ? { subjectAttributesUnknown: true } : {}),
   };
 }
 
@@ -179,15 +187,19 @@ describe('matcher — acceptance matrix (§7.4)', () => {
     expect(matches(rule('#x.y', 'y'), { ...ctx, subjectId: 'z' })).toBe(false);
   });
 
-  it('ignores pseudos and attributes', () => {
+  it('ignores pseudos but enforces attribute constraints', () => {
     const p: ElDef = { tag: 'p', classes: ['a'] };
     const span: ElDef = { tag: 'span' };
     p.children = [span];
     expect(matches(rule('.a:hover .text'), context([p], span, [p]))).toBe(true);
-    const plain: ElDef = { tag: 'p' };
-    const inner: ElDef = { tag: 'span' };
-    plain.children = [inner];
-    expect(matches(rule('[data-x] .text'), context([plain], inner, [plain]))).toBe(true);
+    const plain: ElDef = { tag: 'p', attributes: {}, children: [{ tag: 'span' }] };
+    const inner = plain.children![0]!;
+    expect(matches(rule('[data-x] .text'), context([plain], inner, [plain]))).toBe(false);
+    const carrying: ElDef = { tag: 'p', attributes: { 'data-x': '' }, children: [{ tag: 'span' }] };
+    const carryingSpan = carrying.children![0]!;
+    expect(matches(rule('[data-x] .text'), context([carrying], carryingSpan, [carrying]))).toBe(
+      true
+    );
   });
 
   it('enforces :not() on ancestors', () => {
@@ -427,5 +439,57 @@ describe('matcher — pseudo-classes end to end', () => {
     expect(
       matches(rule0, htmlContext('<ul><li><p class="|"></p></li><li></li></ul>'))
     ).toBe(false);
+  });
+});
+
+describe('matcher — attribute selectors', () => {
+  function ancestorCtx(
+    attributes: Record<string, string | undefined> | undefined,
+    attributesUnknown = false
+  ): ClassAttributeContext {
+    const parent: ElDef = { tag: 'div', attributes, attributesUnknown, children: [{ tag: 'span' }] };
+    const span = parent.children![0]!;
+    return context([parent], span, [parent]);
+  }
+
+  it('checks presence and operators', () => {
+    expect(matches(rule('[data-state] .text'), ancestorCtx({ 'data-state': 'open' }))).toBe(true);
+    expect(matches(rule('[data-state] .text'), ancestorCtx({}))).toBe(false);
+    expect(matches(rule('[data-state="open"] .text'), ancestorCtx({ 'data-state': 'open' }))).toBe(true);
+    expect(matches(rule('[data-state="open"] .text'), ancestorCtx({ 'data-state': 'closed' }))).toBe(false);
+    expect(matches(rule('[data-role~="tab"] .text'), ancestorCtx({ 'data-role': 'tab primary' }))).toBe(true);
+    expect(matches(rule('[data-role~="tab"] .text'), ancestorCtx({ 'data-role': 'tabprimary' }))).toBe(false);
+    expect(matches(rule('[lang|="en"] .text'), ancestorCtx({ lang: 'en-US' }))).toBe(true);
+    expect(matches(rule('[lang|="en"] .text'), ancestorCtx({ lang: 'english' }))).toBe(false);
+    expect(matches(rule('[href^="https://"] .text'), ancestorCtx({ href: 'https://x' }))).toBe(true);
+    expect(matches(rule('[href^="https://"] .text'), ancestorCtx({ href: 'http://x' }))).toBe(false);
+    expect(matches(rule('[href$=".pdf"] .text'), ancestorCtx({ href: 'a.pdf' }))).toBe(true);
+    expect(matches(rule('[href*="admin"] .text'), ancestorCtx({ href: '/admin/x' }))).toBe(true);
+  });
+
+  it('honors the i flag', () => {
+    expect(matches(rule('[data-role="tab" i] .text'), ancestorCtx({ 'data-role': 'TAB' }))).toBe(true);
+    expect(matches(rule('[data-role="tab"] .text'), ancestorCtx({ 'data-role': 'TAB' }))).toBe(false);
+  });
+
+  it('treats dynamic values as present but unverifiable', () => {
+    expect(matches(rule('[data-state] .text'), ancestorCtx({ 'data-state': undefined }))).toBe(true);
+    expect(matches(rule('[data-state="open"] .text'), ancestorCtx({ 'data-state': undefined }))).toBe(false);
+  });
+
+  it('passes attribute tests when the set is unknown (JSX spread)', () => {
+    expect(matches(rule('[data-state="open"] .text'), ancestorCtx(undefined, true))).toBe(true);
+    expect(matches(rule('[data-state] .text'), ancestorCtx(undefined, true))).toBe(true);
+  });
+
+  it('evaluates subject-side attributes and spreads', () => {
+    const subjectRule = rule('.panel-body[aria-hidden="false"]', 'panel-body');
+    const parent: ElDef = { tag: 'div' };
+    const hidden: ElDef = { tag: 'span', attributes: { 'aria-hidden': 'false' } };
+    expect(matches(subjectRule, ctxFor(hidden, [], build([parent, hidden])))).toBe(true);
+    const visible: ElDef = { tag: 'span', attributes: { 'aria-hidden': 'true' } };
+    expect(matches(subjectRule, ctxFor(visible, [], build([parent, visible])))).toBe(false);
+    const spread: ElDef = { tag: 'span', attributesUnknown: true };
+    expect(matches(subjectRule, ctxFor(spread, [], build([parent, spread])))).toBe(true);
   });
 });
