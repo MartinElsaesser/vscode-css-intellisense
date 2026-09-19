@@ -1,6 +1,6 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v14 · **Target:** VS Code `^1.138.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v15 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
@@ -12,6 +12,7 @@
 **Changes in v12:** Docker harness — `docker run --init` so `xvfb-run` is not PID 1; as PID 1 it hangs forever waiting for the Xvfb readiness signal on this image (verified on this machine) (§12.2).
 **Changes in v13:** minimum VS Code raised to `^1.138.0` — the installed `@types/vscode` 1.138 (resolved by the §13 caret range) is newer than the old `^1.90.0` engine and `vsce package` refuses to build; §13 package.json essentials updated.
 **Changes in v14:** simplification pass — dead data removed (`ParsedSource.styleBlocks`, `Compound.universal`, `ClassMatch.matching`/`applicable[]` → `fallback`, one-shot analysis wrappers, `DocumentAnalysis.styleBlocks[].css`), `WorkspaceIndex.classNamesByUri` dropped (proven write-only), imports stored unresolved and resolved once in `ImportResolver` via `vscode.Uri`, settings validated with a zod schema (with a `package.json` drift test), `@types/vscode` dev-dep line corrected to `^1.138`.
+**Changes in v15:** minimum VS Code lowered to `^1.134.0` and `@types/vscode` pinned to `1.134.0` — 1.135 types are not published and code-server 1.135.0 cannot install a `^1.138.0` extension; the API surface used is unchanged and validates against the older types (§13).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -680,8 +681,8 @@ SPEC.md  README.md  CHANGELOG.md  LICENSE
 
 - **Build**: esbuild bundles to `dist/extension.js` (`platform: node`, `format: cjs`, `external: ['vscode']`, `target: 'node20'`, sourcemap). `typescript` is bundled because the extension host does not provide it, so expect a multi-MB bundle (~10 MB); **IMPLEMENTER MAY** split it into a lazily-imported chunk if size becomes a problem.
 - **Runtime deps**: `postcss` (^8), `postcss-selector-parser` (^7), `typescript` (^5; runtime + bundled only, listed here and not under dev deps), `picomatch` (^4; `excludeGlobs` matching for watcher events), `zod` (^4; settings validation). No native modules.
-- **Dev deps**: `@types/vscode ^1.138`, `@types/node ^22` (vitest 5 peer range; extension code still targets the Node 20 runtime), `@types/mocha`, `@types/picomatch`, `esbuild`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint ^9` (flat config), `typescript-eslint ^8`. (`typescript` is intentionally absent: it is a runtime dependency and npm installs it for local `tsc` as well.)
-- **package.json essentials**: `"main": "./dist/extension.js"`, `"engines": { "vscode": "^1.138.0" }`, `"extensionKind": ["workspace"]`, activation events:
+- **Dev deps**: `@types/vscode 1.134.0` (pinned exactly; 1.135 types are not published), `@types/node ^22` (vitest 5 peer range; extension code still targets the Node 20 runtime), `@types/mocha`, `@types/picomatch`, `esbuild`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint ^9` (flat config), `typescript-eslint ^8`. (`typescript` is intentionally absent: it is a runtime dependency and npm installs it for local `tsc` as well.)
+- **package.json essentials**: `"main": "./dist/extension.js"`, `"engines": { "vscode": "^1.134.0" }`, `"extensionKind": ["workspace"]`, activation events:
 
   ```jsonc
   ["onLanguage:html","onLanguage:vue","onLanguage:svelte",
