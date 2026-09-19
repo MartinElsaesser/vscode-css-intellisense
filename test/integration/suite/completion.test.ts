@@ -88,6 +88,36 @@ suite('Completion matrix (HTML)', () => {
     assert.ok(!find(await completionsAt(outside.document, outside.position), 'nest-child'));
   });
 
+  test('resolves three-level and mixed nesting in HTML', async () => {
+    const cases: [string, string, boolean][] = [
+      ['matrix/nested-deep.html', 'nav-link', true],
+      ['matrix/nested-deep-missing.html', 'nav-link', false],
+      ['matrix/nested-id-chain.html', 'icon-link', true],
+      ['matrix/nested-id-chain-missing.html', 'icon-link', false],
+      ['matrix/nested-active.html', 'title', true],
+      ['matrix/nested-active-missing.html', 'title', false],
+    ];
+    for (const [fixture, className, expected] of cases) {
+      const { document, position } = await openFixture(fixture);
+      if (expected) {
+        await waitFor(
+          async () => find(await completionsAt(document, position), className) !== undefined
+        );
+      } else {
+        const items = await completionsAt(document, position);
+        assert.ok(find(items, 'bare'), `${fixture}: positive control`);
+        assert.ok(!find(items, className), `${fixture}: did not expect \`${className}\``);
+      }
+    }
+  });
+
+  test('resolves three-level nesting in TSX', async () => {
+    const { document, position } = await openFixture('matrix/nested.tsx');
+    await waitFor(
+      async () => find(await completionsAt(document, position), 'nav-link') !== undefined
+    );
+  });
+
   test('covers the remaining acceptance matrix rows', async () => {
     const cases: [string, string, boolean][] = [
       ['matrix/sibling-general.html', 'general', true],

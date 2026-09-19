@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseCss } from '../../src/css/parseCss';
 import { ClassRule, SourceRange } from '../../src/css/selectorModel';
-import { ClassAttributeContext, ElementSnapshot } from '../../src/html/analyzeHtml';
+import { ClassAttributeContext, ElementSnapshot, analyzeHtmlDocument } from '../../src/html/analyzeHtml';
 import { matches } from '../../src/match/matcher';
 
 interface ElDef {
@@ -256,5 +256,52 @@ describe('matcher — acceptance matrix (§7.4)', () => {
     };
     expect(matches(rule('div + .text'), jsxCtx)).toBe(false);
     expect(matches(rule('div ~ .text'), jsxCtx)).toBe(false);
+  });
+});
+
+describe('matcher — nested selectors end to end', () => {
+  function htmlContext(html: string): ClassAttributeContext {
+    const offset = html.indexOf('|');
+    const text = html.slice(0, offset) + html.slice(offset + 1);
+    const ctx = analyzeHtmlDocument(text, 'html').contextAt(offset);
+    if (!ctx) throw new Error('no class context');
+    return ctx;
+  }
+
+  function deepRule(className: string): ClassRule {
+    const { rules } = parseCss('.layout { .sidebar { .nav { .nav-link { } } } }', 'file:///deep.css', {
+      origin: 'global',
+    });
+    return rules.find((candidate) => candidate.className === className)!;
+  }
+
+  it('matches when every nesting layer is present', () => {
+    const ctx = htmlContext(
+      '<div class="layout"><aside class="sidebar"><nav class="nav"><a class="|"></a></nav></aside></div>'
+    );
+    expect(matches(deepRule('nav-link'), ctx)).toBe(true);
+  });
+
+  it('fails when a middle nesting layer is missing', () => {
+    const ctx = htmlContext('<div class="layout"><nav class="nav"><a class="|"></a></nav></div>');
+    expect(matches(deepRule('nav-link'), ctx)).toBe(false);
+  });
+
+  it('fails when the outermost nesting layer is missing', () => {
+    const ctx = htmlContext(
+      '<aside class="sidebar"><nav class="nav"><a class="|"></a></nav></aside>'
+    );
+    expect(matches(deepRule('nav-link'), ctx)).toBe(false);
+  });
+
+  it('matches deep & chains only when the compound ancestor matches', () => {
+    const { rules } = parseCss('.card { &.active { .title { } } }', 'file:///deep.css', {
+      origin: 'global',
+    });
+    const title = rules.find((candidate) => candidate.className === 'title')!;
+    expect(
+      matches(title, htmlContext('<div class="card active"><h2 class="|"></h2></div>'))
+    ).toBe(true);
+    expect(matches(title, htmlContext('<div class="card"><h2 class="|"></h2></div>'))).toBe(false);
   });
 });

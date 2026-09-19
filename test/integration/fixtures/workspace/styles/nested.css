@@ -2,3 +2,25 @@
   .nest-inner { color: red; }
   > .nest-child { color: red; }
 }
+
+.layout {
+  .sidebar {
+    .nav {
+      .nav-link { color: red; }
+    }
+  }
+}
+
+#next-steps {
+  ul {
+    a {
+      .icon-link { color: red; }
+    }
+  }
+}
+
+.card {
+  &.active {
+    .title { color: red; }
+  }
+}

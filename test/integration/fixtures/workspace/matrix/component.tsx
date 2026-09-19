@@ -1,3 +1,4 @@
+// @ts-nocheck
 function Wrapper(props: { children?: unknown }) {
   return <section>{props.children}</section>;
 }

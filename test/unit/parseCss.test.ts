@@ -241,6 +241,99 @@ describe('parseCss — native CSS nesting', () => {
     const css = `${list} { ${list} { .x { } } }`;
     expect(rulesFor(css, 'x')).toHaveLength(0);
   });
+
+  it('resolves three-level nesting', () => {
+    const rule = rulesFor('.layout { .sidebar { .nav { .nav-link { } } } }', 'nav-link')[0]!;
+    expect(rule.selectorText).toBe('.layout .sidebar .nav .nav-link');
+    expect(
+      rule.ancestors.map((requirement) => ({
+        tag: requirement.compound.tag,
+        classes: requirement.compound.classes,
+        combinator: requirement.combinator,
+      }))
+    ).toEqual([
+      { tag: undefined, classes: ['nav'], combinator: 'descendant' },
+      { tag: undefined, classes: ['sidebar'], combinator: 'descendant' },
+      { tag: undefined, classes: ['layout'], combinator: 'descendant' },
+    ]);
+  });
+
+  it('resolves deep & chains with pseudos', () => {
+    const rule = rulesFor('.card { &.active { &:hover { .title { } } } }', 'title')[0]!;
+    expect(rule.selectorText).toBe('.card.active:hover .title');
+    expect(rule.ancestors[0]!.compound).toEqual({
+      tag: undefined,
+      id: undefined,
+      classes: ['card', 'active'],
+    });
+  });
+
+  it('resolves deep & inside a class chain', () => {
+    const rule = rulesFor(
+      '.layout { .sidebar { &.collapsed { .nav-link { } } } }',
+      'nav-link'
+    )[0]!;
+    expect(rule.selectorText).toBe('.layout .sidebar.collapsed .nav-link');
+    expect(rule.ancestors.map((requirement) => requirement.compound.classes)).toEqual([
+      ['sidebar', 'collapsed'],
+      ['layout'],
+    ]);
+  });
+
+  it('resolves id and tag ancestor chains (Vite-style)', () => {
+    const rule = rulesFor('#next-steps ul a { .button-icon { } }', 'button-icon')[0]!;
+    expect(rule.selectorText).toBe('#next-steps ul a .button-icon');
+    expect(
+      rule.ancestors.map((requirement) => ({
+        tag: requirement.compound.tag,
+        id: requirement.compound.id,
+        classes: requirement.compound.classes,
+      }))
+    ).toEqual([
+      { tag: 'a', id: undefined, classes: [] },
+      { tag: 'ul', id: undefined, classes: [] },
+      { tag: undefined, id: 'next-steps', classes: [] },
+    ]);
+  });
+
+  it('cross-products at every level', () => {
+    const css = '.a, .b { .c, .d { .e, .f { } } }';
+    const e = rulesFor(css, 'e');
+    const f = rulesFor(css, 'f');
+    expect(e).toHaveLength(4);
+    expect(f).toHaveLength(4);
+    const selectors = [...e, ...f].map((rule) => rule.selectorText).sort();
+    expect(new Set(selectors).size).toBe(8);
+    expect(selectors).toContain('.a .c .e');
+    expect(selectors).toContain('.b .d .f');
+  });
+
+  it('keeps resolvable selectors when a sibling list entry is skipped', () => {
+    const { rules } = parse('.a { & + &, .x { .c { } } }');
+    const x = rules.find((rule) => rule.className === 'x')!;
+    expect(x.selectorText).toBe('.a .x');
+    const c = rules.find((rule) => rule.className === 'c')!;
+    expect(c.selectorText).toBe('.a .x .c');
+  });
+
+  it('resolves & under a nested at-rule', () => {
+    const rule = rulesFor(
+      '.card { &.active { @media (min-width: 40em) { .title { } } } }',
+      'title'
+    )[0]!;
+    expect(rule.selectorText).toBe('.card.active .title');
+    expect(rule.ancestors[0]!.compound.classes).toEqual(['card', 'active']);
+  });
+
+  it('resolves relative selectors at depth', () => {
+    const rule = rulesFor('.a { .b { > .c { } } }', 'c')[0]!;
+    expect(rule.selectorText).toBe('.a .b > .c');
+    expect(rule.subject.classes).toEqual(['c']);
+    expect(rule.ancestors[0]).toEqual({
+      compound: { tag: undefined, id: undefined, classes: ['b'] },
+      combinator: 'child',
+    });
+  });
 });
 
 describe('parseCss — origin and imports', () => {
