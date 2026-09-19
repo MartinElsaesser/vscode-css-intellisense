@@ -71,6 +71,7 @@ npm run compile            # esbuild bundle -> dist/extension.js
 npm run test:integration   # headless VS Code in Docker (recommended here)
 npm run test:integration:host   # requires Xvfb on Linux
 npm run package            # vsce package -> .vsix
+npm run install:local      # package and install the VSIX into the local VS Code (requires `code` on PATH)
 ```
 
 Integration tests open the fixture workspace under
