@@ -1,4 +1,4 @@
-import * as ts from 'typescript';
+import ts from 'typescript';
 import { computeLineStarts, rangeFromOffsets } from '../css/sourceRange';
 import { ClassAttributeContext, DocumentAnalysis, ElementSnapshot } from './analyzeHtml';
 
@@ -77,10 +77,7 @@ function findInnermost(sourceFile: ts.SourceFile, offset: number): ts.Node {
   }
 }
 
-function classNameLiteral(
-  sourceFile: ts.SourceFile,
-  attribute: ts.JsxAttribute
-): ts.StringLiteral | undefined {
+function classNameLiteral(attribute: ts.JsxAttribute): ts.StringLiteral | undefined {
   const initializer = attribute.initializer;
   if (!initializer) return undefined;
   if (ts.isStringLiteral(initializer)) return initializer;
@@ -114,7 +111,7 @@ export function analyzeJsxDocument(
     while (node && !ts.isJsxAttribute(node)) node = node.parent;
     if (!node) return undefined;
     if (node.name.getText(sourceFile) !== 'className') return undefined;
-    const literal = classNameLiteral(sourceFile, node);
+    const literal = classNameLiteral(node);
     if (!literal) return undefined;
     const contentStart = literal.getStart(sourceFile) + 1;
     const contentEnd = literal.getEnd() - 1;

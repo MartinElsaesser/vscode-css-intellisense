@@ -1,7 +1,8 @@
+const { defineConfig } = require('eslint/config');
 const js = require('@eslint/js');
 const tseslint = require('typescript-eslint');
 
-module.exports = tseslint.config(
+module.exports = defineConfig([
   {
     ignores: ['dist/**', 'node_modules/**', 'test/integration/fixtures/**', 'test/integration/out/**'],
   },
@@ -31,5 +32,5 @@ module.exports = tseslint.config(
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
     },
-  }
-);
+  },
+]);
