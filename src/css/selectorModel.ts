@@ -4,7 +4,6 @@ export interface Compound {
   tag?: string;
   id?: string;
   classes: string[];
-  universal: boolean;
 }
 
 export interface AncestorRequirement {
@@ -31,14 +30,12 @@ export interface ClassRule {
 export interface ImportRef {
   specifier: string;
   fromUri: string;
-  sourceUri: string;
   range: SourceRange;
 }
 
 export interface StyleBlock {
   startOffset: number;
   endOffset: number;
-  css: string;
 }
 
 export interface ParsedSource {
@@ -46,5 +43,4 @@ export interface ParsedSource {
   version: number;
   rules: ClassRule[];
   imports: ImportRef[];
-  styleBlocks?: StyleBlock[];
 }

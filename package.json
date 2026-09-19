@@ -157,7 +157,8 @@
     "picomatch": "^4.0.0",
     "postcss": "^8.4.0",
     "postcss-selector-parser": "^7.0.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

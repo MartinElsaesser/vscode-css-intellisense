@@ -1,6 +1,6 @@
 import postcss, { AtRule, Node, Rule } from 'postcss';
 import selectorParser, { Selector } from 'postcss-selector-parser';
-import { extractImportSpecifier, resolveImportUri } from './importSpecifier';
+import { extractImportSpecifier } from './importSpecifier';
 import {
   AncestorRequirement,
   ClassRule,
@@ -45,7 +45,6 @@ interface MutableCompound {
   tag?: string;
   id?: string;
   classes: string[];
-  universal: boolean;
 }
 
 function normalizeCombinator(value: string): Combinator | undefined {
@@ -58,13 +57,7 @@ function normalizeCombinator(value: string): Combinator | undefined {
 }
 
 function finalizeCompound(compound: MutableCompound): Compound {
-  const hasParts = Boolean(compound.tag) || Boolean(compound.id) || compound.classes.length > 0;
-  return {
-    tag: compound.tag,
-    id: compound.id,
-    classes: compound.classes,
-    universal: compound.universal || !hasParts,
-  };
+  return { tag: compound.tag, id: compound.id, classes: compound.classes };
 }
 
 function toRange(node: Rule | AtRule): SourceRange {
@@ -113,7 +106,7 @@ function compileSelector(
       current = undefined;
       continue;
     }
-    if (!current) current = { classes: [], universal: false };
+    if (!current) current = { classes: [] };
     switch (node.type) {
       case 'tag':
         current.tag = node.value.toLowerCase();
@@ -125,9 +118,6 @@ function compileSelector(
       case 'id':
         if (node.value === '') malformed = true;
         else current.id = node.value;
-        break;
-      case 'universal':
-        current.universal = true;
         break;
       case 'nesting':
         invalid = true;
@@ -220,12 +210,9 @@ export function parseCss(css: string, sourceUri: string, opts: ParseCssOptions):
     if (atRule.name.toLowerCase() !== 'import') return;
     const specifier = extractImportSpecifier(atRule.params);
     if (!specifier) return;
-    const resolved = resolveImportUri(sourceUri, specifier);
-    if (!resolved) return;
     imports.push({
       specifier,
       fromUri: sourceUri,
-      sourceUri: resolved,
       range: toRange(atRule),
     });
   });

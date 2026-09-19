@@ -5,8 +5,7 @@ import { matches } from '../match/matcher';
 export interface ClassMatch {
   className: string;
   best?: ClassRule;
-  matching: ClassRule[];
-  applicable: ClassRule[];
+  fallback?: ClassRule;
 }
 
 export interface IndexStats {
@@ -32,7 +31,6 @@ export function rank(rule: ClassRule): number {
 export class WorkspaceIndex {
   private readonly byUri = new Map<string, ParsedSource>();
   private readonly byClass = new Map<string, ClassRule[]>();
-  private readonly classNamesByUri = new Map<string, Set<string>>();
   private readonly sourceKeysByDocument = new Map<string, Set<string>>();
 
   apply(parsed: ParsedSource): void {
@@ -72,7 +70,6 @@ export class WorkspaceIndex {
   clear(): void {
     this.byUri.clear();
     this.byClass.clear();
-    this.classNamesByUri.clear();
     this.sourceKeysByDocument.clear();
   }
 
@@ -82,7 +79,6 @@ export class WorkspaceIndex {
 
   private applySource(parsed: ParsedSource): void {
     this.removeSource(parsed.uri);
-    const names = new Set<string>();
     for (const rule of parsed.rules) {
       let bucket = this.byClass.get(rule.className);
       if (!bucket) {
@@ -90,10 +86,8 @@ export class WorkspaceIndex {
         this.byClass.set(rule.className, bucket);
       }
       bucket.push(rule);
-      names.add(rule.className);
     }
     this.byUri.set(parsed.uri, parsed);
-    this.classNamesByUri.set(parsed.uri, names);
   }
 
   private removeSource(uri: string): void {
@@ -109,7 +103,6 @@ export class WorkspaceIndex {
       }
     }
     this.byUri.delete(uri);
-    this.classNamesByUri.delete(uri);
     for (const [documentUri, keys] of this.sourceKeysByDocument) {
       if (keys.delete(uri) && keys.size === 0) this.sourceKeysByDocument.delete(documentUri);
     }
@@ -134,20 +127,18 @@ export class WorkspaceIndex {
     for (const [className, rules] of this.byClass) {
       if (token?.isCancellationRequested) return results;
       let best: ClassRule | undefined;
-      const matching: ClassRule[] = [];
-      const applicable: ClassRule[] = [];
+      let fallback: ClassRule | undefined;
       for (const rule of rules) {
         if (rule.origin === 'inline' && rule.documentUri !== documentUri) continue;
-        applicable.push(rule);
-        if (matches(rule, ctx)) {
-          matching.push(rule);
-          if (!best || rank(rule) > rank(best)) best = rule;
+        if (fallback === undefined) fallback = rule;
+        if (matches(rule, ctx) && (best === undefined || rank(rule) > rank(best))) {
+          best = rule;
         }
       }
       if (best) {
-        results.push({ className, best, matching, applicable });
-      } else if (options.includeNonMatching && applicable.length > 0) {
-        results.push({ className, matching: [], applicable });
+        results.push({ className, best });
+      } else if (options.includeNonMatching && fallback) {
+        results.push({ className, fallback });
       }
     }
     return results;

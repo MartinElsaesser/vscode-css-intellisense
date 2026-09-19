@@ -333,7 +333,7 @@ export function analyzeHtmlDocument(
       const closeIndex = lowerText.indexOf(`</${tag}`, position);
       if (tag === 'style') {
         const end = closeIndex === -1 ? length : closeIndex;
-        styleBlocks.push({ startOffset: position, endOffset: end, css: text.slice(position, end) });
+        styleBlocks.push({ startOffset: position, endOffset: end });
       }
       return closeIndex === -1 ? length : closeIndex;
     }
@@ -399,13 +399,4 @@ export function analyzeHtmlDocument(
   };
 
   return { version, contextAt, styleBlocks };
-}
-
-export function analyzeHtml(
-  text: string,
-  offset: number,
-  language: HtmlLanguage,
-  version = 0
-): ClassAttributeContext | undefined {
-  return analyzeHtmlDocument(text, language, version).contextAt(offset);
 }

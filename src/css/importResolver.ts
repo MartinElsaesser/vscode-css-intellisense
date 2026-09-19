@@ -9,6 +9,23 @@ export function isWithinFolder(folder: vscode.Uri, candidate: vscode.Uri): boole
   return candidate.scheme === folder.scheme && isPathWithin(folder.path, candidate.path);
 }
 
+export function resolveImportUri(fromUri: string, specifier: string): vscode.Uri | undefined {
+  let base: vscode.Uri;
+  try {
+    base = vscode.Uri.parse(fromUri);
+  } catch {
+    return undefined;
+  }
+  const slash = base.path.lastIndexOf('/');
+  if (slash < 0) return undefined;
+  const directory = base.with({ path: base.path.slice(0, slash + 1) });
+  try {
+    return vscode.Uri.joinPath(directory, specifier);
+  } catch {
+    return undefined;
+  }
+}
+
 export class ImportResolver {
   constructor(
     private readonly loader: FileLoader,
@@ -36,13 +53,8 @@ export class ImportResolver {
   ): Promise<void> {
     if (depth >= maxDepth) return;
     for (const ref of source.imports) {
-      let uri: vscode.Uri;
-      try {
-        uri = vscode.Uri.parse(ref.sourceUri);
-      } catch {
-        continue;
-      }
-      if (!isWithinFolder(folder, uri)) continue;
+      const uri = resolveImportUri(ref.fromUri, ref.specifier);
+      if (!uri || !isWithinFolder(folder, uri)) continue;
       const key = uri.toString();
       if (visited.has(key)) continue;
       visited.add(key);

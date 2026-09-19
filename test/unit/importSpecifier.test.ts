@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  extractImportSpecifier,
-  isPathWithin,
-  resolveImportUri,
-} from '../../src/css/importSpecifier';
+import { extractImportSpecifier, isPathWithin } from '../../src/css/importSpecifier';
 
 describe('import specifiers', () => {
   it('accepts quoted, single-quoted, and url() forms', () => {
@@ -20,16 +16,6 @@ describe('import specifiers', () => {
     expect(extractImportSpecifier('url(data:text/css,x)')).toBeUndefined();
     expect(extractImportSpecifier('"a.css#frag"')).toBeUndefined();
     expect(extractImportSpecifier('')).toBeUndefined();
-  });
-
-  it('resolves relative to the importing file', () => {
-    expect(resolveImportUri('file:///w/styles/main.css', './base.css')).toBe(
-      'file:///w/styles/base.css'
-    );
-    expect(resolveImportUri('file:///w/styles/main.css', '../shared/x.css')).toBe(
-      'file:///w/shared/x.css'
-    );
-    expect(resolveImportUri('file:///w/page.html', 'shared.css')).toBe('file:///w/shared.css');
   });
 });
 

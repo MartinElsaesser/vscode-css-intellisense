@@ -49,7 +49,6 @@ describe('WorkspaceIndex', () => {
     expect(results.map((result) => result.className).sort()).toEqual(['other', 'text']);
     const text = results.find((result) => result.className === 'text')!;
     expect(text.best).toBeDefined();
-    expect(text.matching).toHaveLength(1);
   });
 
   it('omits non-matching classes in strict mode', () => {
@@ -69,7 +68,7 @@ describe('WorkspaceIndex', () => {
     });
     expect(results).toHaveLength(1);
     expect(results[0]!.best).toBeUndefined();
-    expect(results[0]!.applicable).toHaveLength(1);
+    expect(results[0]!.fallback).toBeDefined();
   });
 
   it('scopes inline rules to their document', () => {
@@ -108,8 +107,7 @@ describe('WorkspaceIndex', () => {
     index.remove('file:///w/a.css');
     const results = index.query(ctxFor([]), 'file:///w/page.html', { includeNonMatching: false });
     expect(results).toHaveLength(1);
-    expect(results[0]!.applicable).toHaveLength(1);
-    expect(results[0]!.applicable[0]!.sourceUri).toBe('file:///w/b.css');
+    expect(results[0]!.best!.sourceUri).toBe('file:///w/b.css');
   });
 
   it('picks the best rule by rank', () => {
@@ -121,7 +119,6 @@ describe('WorkspaceIndex', () => {
     });
     expect(results).toHaveLength(1);
     expect(results[0]!.best!.sourceUri).toBe('file:///w/b.css');
-    expect(results[0]!.matching).toHaveLength(2);
   });
 
   it('stops early when cancelled', () => {

@@ -25,7 +25,6 @@ describe('parseCss — selector compilation', () => {
       tag: undefined,
       id: undefined,
       classes: ['text'],
-      universal: false,
     });
     expect(rule.ancestors).toEqual([]);
     expect(rule.selectorText).toBe('.text');
@@ -62,15 +61,14 @@ describe('parseCss — selector compilation', () => {
       tag: undefined,
       id: undefined,
       classes: ['text'],
-      universal: false,
     });
     expect(rule.ancestors).toHaveLength(2);
     expect(rule.ancestors[0]).toEqual({
-      compound: { tag: 'li', id: undefined, classes: ['card'], universal: false },
+      compound: { tag: 'li', id: undefined, classes: ['card'] },
       combinator: 'child',
     });
     expect(rule.ancestors[1]).toEqual({
-      compound: { tag: 'ul', id: undefined, classes: [], universal: false },
+      compound: { tag: 'ul', id: undefined, classes: [] },
       combinator: 'descendant',
     });
   });
@@ -85,10 +83,13 @@ describe('parseCss — selector compilation', () => {
     expect(rulesFor('.foo\\:bar { }', 'foo:bar')).toHaveLength(1);
   });
 
-  it('turns attribute-only compounds into universal', () => {
+  it('turns attribute-only compounds into unconstrained compounds', () => {
     const rule = rulesFor('[data-x] .text { }', 'text')[0]!;
-    expect(rule.ancestors[0]!.compound.universal).toBe(true);
-    expect(rule.ancestors[0]!.compound.classes).toEqual([]);
+    expect(rule.ancestors[0]!.compound).toEqual({
+      tag: undefined,
+      id: undefined,
+      classes: [],
+    });
   });
 
   it('strips pseudo classes but keeps the rest of the compound', () => {
@@ -97,13 +98,16 @@ describe('parseCss — selector compilation', () => {
       tag: undefined,
       id: undefined,
       classes: ['a'],
-      universal: false,
     });
   });
 
   it('handles universal compounds in chains', () => {
     const rule = rulesFor('.a > * .text { }', 'text')[0]!;
-    expect(rule.ancestors[0]!.compound.universal).toBe(true);
+    expect(rule.ancestors[0]!.compound).toEqual({
+      tag: undefined,
+      id: undefined,
+      classes: [],
+    });
     expect(rule.ancestors[0]!.combinator).toBe('descendant');
     expect(rule.ancestors[1]!.compound.classes).toEqual(['a']);
     expect(rule.ancestors[1]!.combinator).toBe('child');
@@ -160,14 +164,13 @@ describe('parseCss — origin and imports', () => {
     expect(rules[0]!.documentUri).toBe('file:///w/page.html');
   });
 
-  it('extracts local imports and resolves them', () => {
+  it('extracts local imports without resolving them', () => {
     const { imports } = parse(
       '@import "./base.css"; @import url(theme.css); @import "https://x/y.css"; @import "a.css#frag";'
     );
     expect(imports.map((ref) => ref.specifier)).toEqual(['./base.css', 'theme.css']);
-    expect(imports[0]!.sourceUri).toBe('file:///w/base.css');
-    expect(imports[1]!.sourceUri).toBe('file:///w/theme.css');
     expect(imports[0]!.fromUri).toBe(URI);
+    expect(imports[0]!.range.start).toEqual({ line: 0, character: 0 });
   });
 
   it('uses the containing document as the import base for inline styles', () => {
@@ -175,7 +178,8 @@ describe('parseCss — origin and imports', () => {
       origin: 'inline',
       documentUri: 'file:///w/page.html',
     });
-    expect(imports[0]!.sourceUri).toBe('file:///w/shared.css');
+    expect(imports[0]!.specifier).toBe('shared.css');
+    expect(imports[0]!.fromUri).toBe('file:///w/page.html');
   });
 
   it('records whole-rule ranges', () => {

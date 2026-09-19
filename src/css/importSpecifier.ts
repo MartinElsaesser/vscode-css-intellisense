@@ -12,14 +12,6 @@ export function extractImportSpecifier(params: string): string | undefined {
   return specifier;
 }
 
-export function resolveImportUri(fromUri: string, specifier: string): string | undefined {
-  try {
-    return new URL(specifier, fromUri).toString();
-  } catch {
-    return undefined;
-  }
-}
-
 export function isPathWithin(rootPath: string, candidatePath: string): boolean {
   if (candidatePath === rootPath) return true;
   const root = rootPath.endsWith('/') ? rootPath : `${rootPath}/`;

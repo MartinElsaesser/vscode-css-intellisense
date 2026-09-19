@@ -14,8 +14,9 @@ export function collectInlineSourcesFromText(
   const documentLineStarts = computeLineStarts(text);
   const sources: ParsedSource[] = [];
   for (const block of analysis.styleBlocks) {
-    const parsed = parseCss(block.css, documentUri, { origin: 'inline', documentUri });
-    const blockLineStarts = computeLineStarts(block.css);
+    const css = text.slice(block.startOffset, block.endOffset);
+    const parsed = parseCss(css, documentUri, { origin: 'inline', documentUri });
+    const blockLineStarts = computeLineStarts(css);
     const shift = (range: SourceRange): SourceRange => {
       const start = block.startOffset + offsetAt(range.start, blockLineStarts);
       const end = block.startOffset + offsetAt(range.end, blockLineStarts);

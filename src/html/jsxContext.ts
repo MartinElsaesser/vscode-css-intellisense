@@ -164,15 +164,6 @@ export function analyzeJsxDocument(
   return { version, contextAt, styleBlocks: [] };
 }
 
-export function analyzeJsx(
-  text: string,
-  offset: number,
-  fileName: string,
-  version = 0
-): ClassAttributeContext | undefined {
-  return analyzeJsxDocument(text, fileName, version).contextAt(offset);
-}
-
 export function isJsxLanguage(languageId: string): boolean {
   return JSX_LANGUAGES.has(languageId);
 }

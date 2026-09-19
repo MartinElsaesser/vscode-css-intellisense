@@ -1,52 +1,44 @@
-export type TraceLevel = 'off' | 'messages' | 'verbose';
+import { z } from 'zod';
 
-export interface CssIntellisenseConfig {
-  enabled: boolean;
-  cssGlobs: string[];
-  excludeGlobs: string[];
-  includeInlineStyles: boolean;
-  languages: string[];
-  strictHierarchy: boolean;
-  resolveImports: boolean;
-  maxImportDepth: number;
-  maxFileSizeKB: number;
-  triggerSuggestAfterQuote: boolean;
-  hideAlreadyUsedClasses: boolean;
-  trace: TraceLevel;
-}
+export const configSchema = z.object({
+  enabled: z.boolean().catch(true),
+  cssGlobs: z.array(z.string().min(1)).catch(['**/*.css']),
+  excludeGlobs: z
+    .array(z.string().min(1))
+    .catch(['**/node_modules/**', '**/dist/**', '**/build/**', '**/out/**', '**/.git/**']),
+  includeInlineStyles: z.boolean().catch(true),
+  languages: z
+    .array(z.string().min(1))
+    .catch(['html', 'vue', 'svelte', 'javascriptreact', 'typescriptreact']),
+  strictHierarchy: z.boolean().catch(true),
+  resolveImports: z.boolean().catch(true),
+  maxImportDepth: z.number().int().nonnegative().catch(10),
+  maxFileSizeKB: z.number().int().positive().catch(10240),
+  triggerSuggestAfterQuote: z.boolean().catch(true),
+  hideAlreadyUsedClasses: z.boolean().catch(true),
+  trace: z.enum(['off', 'messages', 'verbose']).catch('off'),
+});
+
+export type CssIntellisenseConfig = z.infer<typeof configSchema>;
+export type TraceLevel = CssIntellisenseConfig['trace'];
 
 export interface ConfigurationReader {
-  get<T>(section: string, defaultValue: T): T;
+  get(key: string): unknown;
 }
 
-export const DEFAULTS: CssIntellisenseConfig = {
-  enabled: true,
-  cssGlobs: ['**/*.css'],
-  excludeGlobs: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/out/**', '**/.git/**'],
-  includeInlineStyles: true,
-  languages: ['html', 'vue', 'svelte', 'javascriptreact', 'typescriptreact'],
-  strictHierarchy: true,
-  resolveImports: true,
-  maxImportDepth: 10,
-  maxFileSizeKB: 10240,
-  triggerSuggestAfterQuote: true,
-  hideAlreadyUsedClasses: true,
-  trace: 'off',
-};
-
-export function fromRaw(raw: ConfigurationReader): CssIntellisenseConfig {
-  return {
-    enabled: raw.get('enabled', DEFAULTS.enabled),
-    cssGlobs: raw.get('cssGlobs', DEFAULTS.cssGlobs),
-    excludeGlobs: raw.get('excludeGlobs', DEFAULTS.excludeGlobs),
-    includeInlineStyles: raw.get('includeInlineStyles', DEFAULTS.includeInlineStyles),
-    languages: raw.get('languages', DEFAULTS.languages),
-    strictHierarchy: raw.get('strictHierarchy', DEFAULTS.strictHierarchy),
-    resolveImports: raw.get('resolveImports', DEFAULTS.resolveImports),
-    maxImportDepth: raw.get('maxImportDepth', DEFAULTS.maxImportDepth),
-    maxFileSizeKB: raw.get('maxFileSizeKB', DEFAULTS.maxFileSizeKB),
-    triggerSuggestAfterQuote: raw.get('triggerSuggestAfterQuote', DEFAULTS.triggerSuggestAfterQuote),
-    hideAlreadyUsedClasses: raw.get('hideAlreadyUsedClasses', DEFAULTS.hideAlreadyUsedClasses),
-    trace: raw.get('trace', DEFAULTS.trace),
-  };
+export function parseConfig(raw: ConfigurationReader): CssIntellisenseConfig {
+  return configSchema.parse({
+    enabled: raw.get('enabled'),
+    cssGlobs: raw.get('cssGlobs'),
+    excludeGlobs: raw.get('excludeGlobs'),
+    includeInlineStyles: raw.get('includeInlineStyles'),
+    languages: raw.get('languages'),
+    strictHierarchy: raw.get('strictHierarchy'),
+    resolveImports: raw.get('resolveImports'),
+    maxImportDepth: raw.get('maxImportDepth'),
+    maxFileSizeKB: raw.get('maxFileSizeKB'),
+    triggerSuggestAfterQuote: raw.get('triggerSuggestAfterQuote'),
+    hideAlreadyUsedClasses: raw.get('hideAlreadyUsedClasses'),
+    trace: raw.get('trace'),
+  });
 }

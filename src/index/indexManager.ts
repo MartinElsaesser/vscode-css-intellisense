@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import picomatch from 'picomatch';
 import { getConfig } from '../config';
-import { ImportResolver, isWithinFolder } from '../css/importResolver';
+import { ImportResolver, isWithinFolder, resolveImportUri } from '../css/importResolver';
 import { parseCss } from '../css/parseCss';
 import { ParsedSource } from '../css/selectorModel';
 import { collectInlineSourcesFromText } from './inlineStyles';
@@ -279,18 +279,19 @@ export class IndexManager implements vscode.Disposable {
     }
     const queue = [...reachable];
     while (queue.length > 0) {
-      const uri = queue.pop()!;
-      const parsed = this.index.parsedFor(uri);
+      const key = queue.pop()!;
+      const parsed = this.index.parsedFor(key);
       if (!parsed) continue;
       for (const ref of parsed.imports) {
-        if (!reachable.has(ref.sourceUri)) {
-          reachable.add(ref.sourceUri);
-          queue.push(ref.sourceUri);
+        const resolved = resolveImportUri(ref.fromUri, ref.specifier);
+        if (!resolved) continue;
+        const importedKey = resolved.toString();
+        if (!reachable.has(importedKey)) {
+          reachable.add(importedKey);
+          queue.push(importedKey);
         }
       }
     }
-    for (const uri of this.index.sourceUris()) {
-      if (!reachable.has(uri)) this.index.remove(uri);
-    }
+    this.index.retain(reachable);
   }
 }

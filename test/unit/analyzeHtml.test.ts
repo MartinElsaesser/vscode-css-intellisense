@@ -122,7 +122,6 @@ describe('analyzeHtml — hierarchy', () => {
     const analysis = analyzeHtmlDocument(html, 'html');
     expect(analysis.styleBlocks).toHaveLength(1);
     const block = analysis.styleBlocks[0]!;
-    expect(block.css).toBe('.a { color: red }');
     expect(html.slice(block.startOffset, block.endOffset)).toBe('.a { color: red }');
   });
 
@@ -181,7 +180,8 @@ describe('analyzeHtml — Vue and Svelte specifics', () => {
     const html = '<template><p class="x"></p></template><style scoped>.a { }</style>';
     const analysis = analyzeHtmlDocument(html, 'vue');
     expect(analysis.styleBlocks).toHaveLength(1);
-    expect(analysis.styleBlocks[0]!.css).toBe('.a { }');
+    const block = analysis.styleBlocks[0]!;
+    expect(html.slice(block.startOffset, block.endOffset)).toBe('.a { }');
   });
 
   it('ignores Svelte block syntax for nesting', () => {

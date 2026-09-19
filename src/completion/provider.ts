@@ -100,7 +100,7 @@ export class CssCompletionProvider implements vscode.CompletionItemProvider {
   }
 
   private toItem(match: ClassMatch, ctx: ClassAttributeContext): vscode.CompletionItem {
-    const rule = match.best ?? match.applicable[0]!;
+    const rule = match.best ?? match.fallback!;
     const completionData: CompletionData = {
       selectorText: rule.selectorText,
       sourceUri: rule.sourceUri,
