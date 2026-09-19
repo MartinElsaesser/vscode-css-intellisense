@@ -1,6 +1,6 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v19 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v20 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
@@ -17,6 +17,7 @@
 **Changes in v17:** native CSS nesting is now resolved to concrete selectors before compilation — implicit `& ` descendant, relative selectors, `&` substitution (including mid-selector), comma cross-products, at-rule pass-through, memoized and capped (§4.2, §4.4, §15).
 **Changes in v18:** LSP sweep fixes — dead `sourceFile` parameter removed from `classNameLiteral` and a default `typescript` import; flat ESLint config migrated to `defineConfig` from `eslint/config` (installed ESLint is 10.x); dev-dep line synced to `eslint ^10`.
 **Changes in v19:** pseudo-class semantics — `:not(simple)` is enforced (excluded tag/id/classes on `Compound.not`), `:is()`/`:where(simple)` alternatives are expanded into concrete selectors, and structural pseudo-classes (`:first-child`, `:last-child`, `:only-child`, `:*-of-type`, `:nth-child()`, `:nth-last-child()`, `:nth-of-type()`, `:nth-last-of-type()`, `:heading`) are evaluated against sibling data; JSX has no sibling data, so structural tests never match there (§3, §4.2, §5.1, §6.2, §7.3, §7.4, §15).
+**Changes in v20:** scope cleanup — the preprocessor-parsing item is dropped from scope entirely (neither non-goal nor future work); the §15 Future list is trimmed to the still-unimplemented items; §13 project layout synced with the actual modules (`configModel`, `importSpecifier`, `sourceRange`, `debouncer`, `indexManager`, `inlineStyles`, `vitest.config.mts`).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -46,7 +47,7 @@ Editors suggest every class found in any stylesheet. With hierarchical selectors
 
 ### 1.3 Non-goals (v1)
 
-Cascade/specificity resolution; dynamic classes (Vue `:class`, Svelte `class:foo`/`{expr}`, JSX `{expr}`); CSS-in-JS and CSS Modules name mapping; attribute selectors, `:has()`, `:empty`, `:root`, and pseudo-classes beyond the supported set in §4.2; `@scope`; resolving remote `@import`; SCSS/LESS source parsing (only compiled CSS); go-to-definition/hover/validation (future work).
+Cascade/specificity resolution; dynamic classes (Vue `:class`, Svelte `class:foo`/`{expr}`, JSX `{expr}`); CSS-in-JS and CSS Modules name mapping; attribute selectors, `:has()`, `:empty`, `:root`, and pseudo-classes beyond the supported set in §4.2; `@scope`; resolving remote `@import`; go-to-definition/hover/validation (future work).
 
 ### 1.4 Prior art
 
@@ -729,21 +730,27 @@ F5 Extension Development Host, open `test/integration/fixtures/workspace/index.h
 .vscode/launch.json, tasks.json
 src/
   extension.ts                  # activate/deactivate, wiring, commands
-  config.ts                     # read/validate settings
+  config.ts                     # reads vscode settings
+  configModel.ts                # zod schema + config types
   log.ts                        # OutputChannel, trace levels
-  css/selectorModel.ts
-  css/parseCss.ts
-  css/importResolver.ts
-  index/workspaceIndex.ts
-  index/fileLoader.ts           # reads/debounces, mtime+version
+  css/selectorModel.ts          # types (§3)
+  css/parseCss.ts               # compilation, nesting + pseudo resolution (§4)
+  css/importSpecifier.ts        # pure specifier extraction/validation
+  css/importResolver.ts         # recursive @import resolution (§8.3)
+  css/sourceRange.ts            # offset <-> line/character helpers
+  index/workspaceIndex.ts       # buckets, replaceDocument, retain (§8.1)
+  index/indexManager.ts         # per-folder scan/watchers/lifecycle (§8.4)
+  index/fileLoader.ts           # reads, BOM/size handling, mtime cache
+  index/inlineStyles.ts         # <style> block capture (§8.2)
+  index/debouncer.ts            # keyed debounce
   html/analyzeHtml.ts           # scanner (§5)
-  html/jsxContext.ts            # (§6)
+  html/jsxContext.ts            # JSX/TSX analyzer (§6)
   match/matcher.ts              # (§7)
   completion/provider.ts        # (§9)
 test/
   unit/*.test.ts
-  integration/{Dockerfile,run-docker.js,run-host.js,suite/**,fixtures/**}
-esbuild.js  package.json  tsconfig.json  vitest.config.ts  eslint.config.js
+  integration/{Dockerfile,run-docker.js,run-host.js,tsconfig.json,suite/**,fixtures/**}
+esbuild.js  package.json  tsconfig.json  vitest.config.mts  eslint.config.js
 SPEC.md  README.md  CHANGELOG.md  LICENSE
 ```
 
@@ -798,7 +805,7 @@ Definition of done for the project: all §7.4 acceptance rows pass in integratio
 | `@scope` wrapper ignored (its nested rules are processed normally) | Documented; can yield false positives; `@scope` evaluation is a non-goal (§1.3). |
 | Minified single-line CSS yields coarse ranges | Acceptable; docs link uses the rule start. |
 
-Future: link-scoped indexing, `:is()`/`:where()` expansion, `:not()` negation, go-to-definition for classes, "no matching ancestor" diagnostic/quick-fix, SCSS/LESS.
+Future: link-scoped indexing, go-to-definition for classes, "no matching ancestor" diagnostic/quick-fix.
 
 ---
 
