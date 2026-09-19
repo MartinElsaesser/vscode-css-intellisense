@@ -19,6 +19,7 @@ export interface ClassAttributeContext {
   path: ElementSnapshot[];
   subjectParentChildren: readonly ElementSnapshot[];
   subjectIndexInParent: number;
+  siblingDataAvailable: boolean;
 }
 
 export interface DocumentAnalysis {
@@ -399,6 +400,7 @@ export function analyzeHtmlDocument(
         path: occurrence.path,
         subjectParentChildren: occurrence.subjectParentChildren,
         subjectIndexInParent: occurrence.subjectIndexInParent,
+        siblingDataAvailable: true,
       };
     }
     return undefined;

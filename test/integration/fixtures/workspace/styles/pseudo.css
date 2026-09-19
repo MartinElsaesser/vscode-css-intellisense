@@ -1,0 +1,11 @@
+.list-item:not(.active) {
+  .not-active-child { color: red; }
+}
+
+.nth-list li:nth-child(2) {
+  .second-item { color: red; }
+}
+
+.is-a:is(.is-b, .is-c) {
+  .is-child { color: red; }
+}

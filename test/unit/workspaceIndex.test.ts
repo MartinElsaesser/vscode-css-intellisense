@@ -36,6 +36,7 @@ function ctxFor(path: string[], subjectTag = 'p'): ClassAttributeContext {
     path: path.map(snapshot),
     subjectParentChildren: [],
     subjectIndexInParent: 0,
+    siblingDataAvailable: true,
   };
 }
 

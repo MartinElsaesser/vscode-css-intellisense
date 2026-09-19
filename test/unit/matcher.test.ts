@@ -53,6 +53,7 @@ function ctxFor(
     path: path.map((def) => snapshots.get(def)!),
     subjectParentChildren: snapshot.parentChildren,
     subjectIndexInParent: snapshot.indexInParent,
+    siblingDataAvailable: true,
   };
 }
 
@@ -187,10 +188,20 @@ describe('matcher — acceptance matrix (§7.4)', () => {
     const inner: ElDef = { tag: 'span' };
     plain.children = [inner];
     expect(matches(rule('[data-x] .text'), context([plain], inner, [plain]))).toBe(true);
-    const ab: ElDef = { tag: 'p', classes: ['a', 'b'] };
-    const span2: ElDef = { tag: 'span' };
-    ab.children = [span2];
-    expect(matches(rule('.a:not(.b) .text'), context([ab], span2, [ab]))).toBe(true);
+  });
+
+  it('enforces :not() on ancestors', () => {
+    const ab: ElDef = { tag: 'p', classes: ['a', 'b'], children: [{ tag: 'span' }] };
+    const abSpan = ab.children![0]!;
+    expect(matches(rule('.a:not(.b) .text'), context([ab], abSpan, [ab]))).toBe(false);
+    const onlyA: ElDef = { tag: 'p', classes: ['a'], children: [{ tag: 'span' }] };
+    const aSpan = onlyA.children![0]!;
+    expect(matches(rule('.a:not(.b) .text'), context([onlyA], aSpan, [onlyA]))).toBe(true);
+    const excluded: ElDef = { tag: 'p', classes: ['a'], children: [{ tag: 'span' }] };
+    const excludedSpan = excluded.children![0]!;
+    expect(matches(rule(':not(.a) .text'), context([excluded], excludedSpan, [excluded]))).toBe(
+      false
+    );
   });
 
   it('handles a long mixed chain', () => {
@@ -253,6 +264,7 @@ describe('matcher — acceptance matrix (§7.4)', () => {
       ...ctx,
       subjectParentChildren: [],
       subjectIndexInParent: 0,
+      siblingDataAvailable: false,
     };
     expect(matches(rule('div + .text'), jsxCtx)).toBe(false);
     expect(matches(rule('div ~ .text'), jsxCtx)).toBe(false);
@@ -303,5 +315,117 @@ describe('matcher — nested selectors end to end', () => {
       matches(title, htmlContext('<div class="card active"><h2 class="|"></h2></div>'))
     ).toBe(true);
     expect(matches(title, htmlContext('<div class="card"><h2 class="|"></h2></div>'))).toBe(false);
+  });
+});
+
+describe('matcher — structural pseudo-classes', () => {
+  function listContext(liIndex: number, tags: string[] = ['li', 'li', 'li']): ClassAttributeContext {
+    const items: ElDef[] = tags.map((tag) => ({ tag, classes: ['item'] }));
+    const ul: ElDef = { tag: 'ul', children: items };
+    const p: ElDef = { tag: 'p' };
+    items[liIndex]!.children = [p];
+    return ctxFor(p, [items[liIndex]!, ul], build([ul]));
+  }
+
+  it('evaluates :first-child, :last-child, and :only-child on ancestors', () => {
+    expect(matches(rule('li:first-child .text'), listContext(0))).toBe(true);
+    expect(matches(rule('li:first-child .text'), listContext(1))).toBe(false);
+    expect(matches(rule('li:last-child .text'), listContext(2))).toBe(true);
+    expect(matches(rule('li:last-child .text'), listContext(1))).toBe(false);
+    expect(matches(rule('li:only-child .text'), listContext(0, ['li']))).toBe(true);
+    expect(matches(rule('li:only-child .text'), listContext(0))).toBe(false);
+  });
+
+  it('evaluates An+B arguments', () => {
+    expect(matches(rule('li:nth-child(2) .text'), listContext(1))).toBe(true);
+    expect(matches(rule('li:nth-child(2) .text'), listContext(0))).toBe(false);
+    expect(matches(rule('li:nth-child(odd) .text'), listContext(0))).toBe(true);
+    expect(matches(rule('li:nth-child(2n + 1) .text'), listContext(2))).toBe(true);
+    expect(matches(rule('li:nth-child(2n + 1) .text'), listContext(1))).toBe(false);
+    expect(matches(rule('li:nth-last-child(1) .text'), listContext(2))).toBe(true);
+    expect(matches(rule('li:nth-last-child(even) .text'), listContext(1))).toBe(true);
+  });
+
+  it('evaluates of-type variants', () => {
+    const mixed = listContext(0, ['li', 'div', 'li']);
+    expect(matches(rule('li:first-of-type .text'), mixed)).toBe(true);
+    expect(matches(rule('div:first-of-type .text'), mixed)).toBe(false);
+    const second = listContext(2, ['li', 'div', 'li']);
+    expect(matches(rule('li:last-of-type .text'), second)).toBe(true);
+    expect(matches(rule('li:nth-of-type(2) .text'), second)).toBe(true);
+    expect(matches(rule('li:nth-of-type(2) .text'), mixed)).toBe(false);
+    const only = listContext(0, ['li', 'div']);
+    expect(matches(rule('li:only-of-type .text'), only)).toBe(true);
+  });
+
+  it('evaluates :heading on ancestors', () => {
+    const heading: ElDef = { tag: 'h2', children: [{ tag: 'p' }] };
+    const p = heading.children![0]!;
+    expect(matches(rule(':heading .text'), context([heading], p, [heading]))).toBe(true);
+    expect(matches(rule(':heading .text'), listContext(0))).toBe(false);
+  });
+
+  it('evaluates structural pseudo-classes on the subject', () => {
+    const first: ElDef = { tag: 'p' };
+    const second: ElDef = { tag: 'p' };
+    const snapshots = build([first, second]);
+    const firstCtx = ctxFor(first, [], snapshots);
+    const secondCtx = ctxFor(second, [], snapshots);
+    expect(matches(rule('.text:first-child'), firstCtx)).toBe(true);
+    expect(matches(rule('.text:first-child'), secondCtx)).toBe(false);
+    expect(matches(rule('.text:nth-child(2)'), secondCtx)).toBe(true);
+    expect(matches(rule('.text:last-child'), secondCtx)).toBe(true);
+  });
+
+  it('fails structural pseudo-classes without sibling data (JSX)', () => {
+    const p: ElDef = { tag: 'p' };
+    const ctx = context([p], p, []);
+    const jsxCtx: ClassAttributeContext = {
+      ...ctx,
+      subjectParentChildren: [],
+      subjectIndexInParent: 0,
+      siblingDataAvailable: false,
+    };
+    expect(matches(rule('.text:first-child'), jsxCtx)).toBe(false);
+    expect(matches(rule('.text:only-child'), jsxCtx)).toBe(false);
+  });
+
+  it('enforces :not() on the subject against existing tokens', () => {
+    const p: ElDef = { tag: 'p' };
+    const ctx = context([p], p, []);
+    expect(matches(rule('.text:not(.used)'), { ...ctx, value: 'used' })).toBe(false);
+    expect(matches(rule('.text:not(.used)'), { ...ctx, value: 'other' })).toBe(true);
+  });
+});
+
+describe('matcher — pseudo-classes end to end', () => {
+  function htmlContext(html: string): ClassAttributeContext {
+    const offset = html.indexOf('|');
+    const text = html.slice(0, offset) + html.slice(offset + 1);
+    const ctx = analyzeHtmlDocument(text, 'html').contextAt(offset);
+    if (!ctx) throw new Error('no class context');
+    return ctx;
+  }
+
+  it('matches :is() alternatives', () => {
+    const { rules } = parseCss(':is(.a, .b) .text { }', 'file:///t.css', { origin: 'global' });
+    expect(rules.some((candidate) => matches(candidate, htmlContext('<div class="b"><p class="|"></p></div>')))).toBe(true);
+    expect(rules.some((candidate) => matches(candidate, htmlContext('<div class="c"><p class="|"></p></div>')))).toBe(false);
+  });
+
+  it('enforces :not() against scanned ancestors', () => {
+    const rule0 = parseCss('.a:not(.b) .text { }', 'file:///t.css', { origin: 'global' }).rules[0]!;
+    expect(matches(rule0, htmlContext('<div class="a"><p class="|"></p></div>'))).toBe(true);
+    expect(matches(rule0, htmlContext('<div class="a b"><p class="|"></p></div>'))).toBe(false);
+  });
+
+  it('evaluates structural pseudo-classes against scanned siblings', () => {
+    const rule0 = parseCss('li:nth-child(2) .text { }', 'file:///t.css', { origin: 'global' }).rules[0]!;
+    expect(
+      matches(rule0, htmlContext('<ul><li></li><li><p class="|"></p></li></ul>'))
+    ).toBe(true);
+    expect(
+      matches(rule0, htmlContext('<ul><li><p class="|"></p></li><li></li></ul>'))
+    ).toBe(false);
   });
 });

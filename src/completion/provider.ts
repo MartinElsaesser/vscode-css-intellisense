@@ -3,6 +3,7 @@ import type { CssIntellisenseConfig } from '../configModel';
 import type { SourceRange } from '../css/selectorModel';
 import type { ClassAttributeContext, DocumentAnalysis } from '../html/analyzeHtml';
 import { ClassMatch, rank, WorkspaceIndex } from '../index/workspaceIndex';
+import { subjectClasses } from '../match/matcher';
 import type { Logger } from '../log';
 
 export interface CompletionDeps {
@@ -36,12 +37,6 @@ function toVscodeRange(range: SourceRange): vscode.Range {
   );
 }
 
-function usedClasses(ctx: ClassAttributeContext): Set<string> {
-  const used = new Set(ctx.value.split(/\s+/).filter(Boolean));
-  if (ctx.partial) used.delete(ctx.partial);
-  return used;
-}
-
 function workspaceRelativePath(sourceUri: string): string {
   return vscode.workspace.asRelativePath(vscode.Uri.parse(sourceUri), false);
 }
@@ -66,7 +61,7 @@ export class CssCompletionProvider implements vscode.CompletionItemProvider {
     const index = this.deps.getIndex(document);
     if (!index) return undefined;
 
-    const used = usedClasses(ctx);
+    const used = subjectClasses(ctx);
     const results = index.query(
       ctx,
       document.uri.toString(),

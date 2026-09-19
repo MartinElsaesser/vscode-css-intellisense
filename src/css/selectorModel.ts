@@ -1,9 +1,29 @@
 export type Combinator = 'descendant' | 'child' | 'adjacent' | 'general';
 
+export type StructuralKind =
+  | 'first-child'
+  | 'last-child'
+  | 'only-child'
+  | 'first-of-type'
+  | 'last-of-type'
+  | 'only-of-type'
+  | 'nth-child'
+  | 'nth-last-child'
+  | 'nth-of-type'
+  | 'nth-last-of-type'
+  | 'heading';
+
+export interface StructuralTest {
+  kind: StructuralKind;
+  nth?: { a: number; b: number };
+}
+
 export interface Compound {
   tag?: string;
   id?: string;
   classes: string[];
+  not?: Compound[];
+  structural?: StructuralTest[];
 }
 
 export interface AncestorRequirement {

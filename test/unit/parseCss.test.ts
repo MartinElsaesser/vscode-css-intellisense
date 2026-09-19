@@ -367,3 +367,95 @@ describe('parseCss — origin and imports', () => {
     expect(rules[0]!.range.end.line).toBe(2);
   });
 });
+
+describe('parseCss — pseudo-classes', () => {
+  it('records :not() exclusions on ancestors', () => {
+    const rule = rulesFor('.a:not(.b) .text { }', 'text')[0]!;
+    expect(rule.ancestors[0]!.compound).toEqual({
+      tag: undefined,
+      id: undefined,
+      classes: ['a'],
+      not: [{ tag: undefined, id: undefined, classes: ['b'] }],
+    });
+  });
+
+  it('records selector lists inside :not()', () => {
+    const rule = rulesFor('.a:not(.b, #c) .text { }', 'text')[0]!;
+    expect(rule.ancestors[0]!.compound.not).toEqual([
+      { tag: undefined, id: undefined, classes: ['b'] },
+      { tag: undefined, id: 'c', classes: [] },
+    ]);
+  });
+
+  it('records :not() on the subject', () => {
+    const rule = rulesFor('.text:not(.used) { }', 'text')[0]!;
+    expect(rule.subject.not).toEqual([{ tag: undefined, id: undefined, classes: ['used'] }]);
+  });
+
+  it('ignores :not() arguments that are not simple compounds', () => {
+    const rule = rulesFor('.a:not(.b .c) .text { }', 'text')[0]!;
+    expect(rule.ancestors[0]!.compound).toEqual({
+      tag: undefined,
+      id: undefined,
+      classes: ['a'],
+    });
+  });
+
+  it('expands :is() and :where() alternatives', () => {
+    const isRules = rulesFor(':is(.a, .b) .text { }', 'text');
+    expect(isRules.map((rule) => rule.ancestors[0]!.compound.classes)).toEqual([['a'], ['b']]);
+    const whereRules = rulesFor(':where(.a, .b) .text { }', 'text');
+    expect(whereRules.map((rule) => rule.ancestors[0]!.compound.classes)).toEqual([['a'], ['b']]);
+  });
+
+  it('expands :is() inside a compound', () => {
+    const rules = rulesFor('.x:is(.a, .b) .text { }', 'text');
+    expect(rules.map((rule) => rule.ancestors[0]!.compound.classes).sort()).toEqual([
+      ['x', 'a'],
+      ['x', 'b'],
+    ]);
+  });
+
+  it('ignores complex :is() alternatives', () => {
+    const rules = rulesFor(':is(.a .b, .c) .text { }', 'text');
+    expect(rules).toHaveLength(1);
+    expect(rules[0]!.ancestors[0]!.compound).toEqual({
+      tag: undefined,
+      id: undefined,
+      classes: [],
+    });
+  });
+
+  it('records structural pseudo-classes', () => {
+    const first = rulesFor('li:first-child .text { }', 'text')[0]!;
+    expect(first.ancestors[0]!.compound.structural).toEqual([{ kind: 'first-child' }]);
+    const lastOfType = rulesFor('li:last-of-type .text { }', 'text')[0]!;
+    expect(lastOfType.ancestors[0]!.compound.structural).toEqual([{ kind: 'last-of-type' }]);
+    const heading = rulesFor(':heading .text { }', 'text')[0]!;
+    expect(heading.ancestors[0]!.compound.structural).toEqual([{ kind: 'heading' }]);
+  });
+
+  it('parses An+B arguments', () => {
+    const odd = rulesFor('li:nth-child(odd) .text { }', 'text')[0]!;
+    expect(odd.ancestors[0]!.compound.structural).toEqual([
+      { kind: 'nth-child', nth: { a: 2, b: 1 } },
+    ]);
+    const expression = rulesFor('li:nth-child(2n + 1) .text { }', 'text')[0]!;
+    expect(expression.ancestors[0]!.compound.structural).toEqual([
+      { kind: 'nth-child', nth: { a: 2, b: 1 } },
+    ]);
+    const negative = rulesFor('li:nth-last-child(-n + 3) .text { }', 'text')[0]!;
+    expect(negative.ancestors[0]!.compound.structural).toEqual([
+      { kind: 'nth-last-child', nth: { a: -1, b: 3 } },
+    ]);
+  });
+
+  it('ignores unparsable An+B arguments', () => {
+    const rule = rulesFor('li:nth-child(foo) .text { }', 'text')[0]!;
+    expect(rule.ancestors[0]!.compound).toEqual({
+      tag: 'li',
+      id: undefined,
+      classes: [],
+    });
+  });
+});

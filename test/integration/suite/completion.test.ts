@@ -118,6 +118,29 @@ suite('Completion matrix (HTML)', () => {
     );
   });
 
+  test('enforces :not(), :is(), and structural pseudo-classes', async () => {
+    const cases: [string, string, boolean][] = [
+      ['matrix/pseudo-not.html', 'not-active-child', true],
+      ['matrix/pseudo-not-excluded.html', 'not-active-child', false],
+      ['matrix/pseudo-nth.html', 'second-item', true],
+      ['matrix/pseudo-nth-first.html', 'second-item', false],
+      ['matrix/pseudo-is.html', 'is-child', true],
+      ['matrix/pseudo-is-missing.html', 'is-child', false],
+    ];
+    for (const [fixture, className, expected] of cases) {
+      const { document, position } = await openFixture(fixture);
+      if (expected) {
+        await waitFor(
+          async () => find(await completionsAt(document, position), className) !== undefined
+        );
+      } else {
+        const items = await completionsAt(document, position);
+        assert.ok(find(items, 'bare'), `${fixture}: positive control`);
+        assert.ok(!find(items, className), `${fixture}: did not expect \`${className}\``);
+      }
+    }
+  });
+
   test('covers the remaining acceptance matrix rows', async () => {
     const cases: [string, string, boolean][] = [
       ['matrix/sibling-general.html', 'general', true],
@@ -128,7 +151,8 @@ suite('Completion matrix (HTML)', () => {
       ['matrix/id-wrong.html', 'hashed', false],
       ['matrix/pseudo.html', 'pseudo', true],
       ['matrix/attr.html', 'attr', true],
-      ['matrix/notpseudo.html', 'notpseudo', true],
+      ['matrix/notpseudo.html', 'notpseudo', false],
+      ['matrix/notpseudo-match.html', 'notpseudo', true],
       ['matrix/mixed.html', 'mixed', true],
     ];
     for (const [fixture, className, expected] of cases) {

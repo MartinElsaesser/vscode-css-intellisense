@@ -1,5 +1,5 @@
 import postcss, { AtRule, Node, Rule } from 'postcss';
-import selectorParser, { Node as SelectorNode, Selector } from 'postcss-selector-parser';
+import selectorParser, { Node as SelectorNode, Pseudo, Selector } from 'postcss-selector-parser';
 import { extractImportSpecifier } from './importSpecifier';
 import {
   AncestorRequirement,
@@ -8,6 +8,8 @@ import {
   Compound,
   ImportRef,
   SourceRange,
+  StructuralKind,
+  StructuralTest,
 } from './selectorModel';
 
 export class ParseFailure extends Error {
@@ -47,6 +49,8 @@ interface MutableCompound {
   tag?: string;
   id?: string;
   classes: string[];
+  not: Compound[];
+  structural: StructuralTest[];
 }
 
 function normalizeCombinator(value: string): Combinator | undefined {
@@ -59,7 +63,14 @@ function normalizeCombinator(value: string): Combinator | undefined {
 }
 
 function finalizeCompound(compound: MutableCompound): Compound {
-  return { tag: compound.tag, id: compound.id, classes: compound.classes };
+  const result: Compound = {
+    tag: compound.tag,
+    id: compound.id,
+    classes: compound.classes,
+  };
+  if (compound.not.length > 0) result.not = compound.not;
+  if (compound.structural.length > 0) result.structural = compound.structural;
+  return result;
 }
 
 function toRange(node: Rule | AtRule): SourceRange {
@@ -182,6 +193,152 @@ function resolveRuleSelectors(
   return result;
 }
 
+const STRUCTURAL_PSEUDOS = new Map<string, StructuralKind>([
+  [':first-child', 'first-child'],
+  [':last-child', 'last-child'],
+  [':only-child', 'only-child'],
+  [':first-of-type', 'first-of-type'],
+  [':last-of-type', 'last-of-type'],
+  [':only-of-type', 'only-of-type'],
+]);
+
+const NTH_PSEUDOS = new Map<string, StructuralKind>([
+  [':nth-child', 'nth-child'],
+  [':nth-last-child', 'nth-last-child'],
+  [':nth-of-type', 'nth-of-type'],
+  [':nth-last-of-type', 'nth-last-of-type'],
+]);
+
+function parseNth(text: string): { a: number; b: number } | undefined {
+  const normalized = text.replace(/\s+/g, '').toLowerCase();
+  if (normalized === 'odd') return { a: 2, b: 1 };
+  if (normalized === 'even') return { a: 2, b: 0 };
+  if (/^[+-]?\d+$/.test(normalized)) return { a: 0, b: Number.parseInt(normalized, 10) };
+  const match = /^([+-]?\d*)n(?:([+-]\d+))?$/.exec(normalized);
+  if (!match) return undefined;
+  const aPart = match[1]!;
+  const a = aPart === '' || aPart === '+' ? 1 : aPart === '-' ? -1 : Number.parseInt(aPart, 10);
+  const b = match[2] ? Number.parseInt(match[2], 10) : 0;
+  return { a, b };
+}
+
+function nthArguments(node: Pseudo): { a: number; b: number } | undefined {
+  const text = node.toString();
+  const open = text.indexOf('(');
+  const close = text.lastIndexOf(')');
+  if (open === -1 || close <= open) return undefined;
+  return parseNth(text.slice(open + 1, close));
+}
+
+function simpleCompoundFrom(selector: Selector): Compound | undefined {
+  const compound: MutableCompound = { classes: [], not: [], structural: [] };
+  for (const node of selector.nodes) {
+    switch (node.type) {
+      case 'tag':
+        compound.tag = node.value.toLowerCase();
+        break;
+      case 'class':
+        if (node.value === '') return undefined;
+        compound.classes.push(node.value);
+        break;
+      case 'id':
+        if (node.value === '') return undefined;
+        compound.id = node.value;
+        break;
+      case 'universal':
+        break;
+      default:
+        return undefined;
+    }
+  }
+  return finalizeCompound(compound);
+}
+
+function simpleCompoundList(node: Pseudo): Compound[] | undefined {
+  const compounds: Compound[] = [];
+  for (const child of node.nodes ?? []) {
+    if (child.type !== 'selector') return undefined;
+    const compound = simpleCompoundFrom(child);
+    if (!compound) return undefined;
+    compounds.push(compound);
+  }
+  return compounds.length > 0 ? compounds : undefined;
+}
+
+function handlePseudo(current: MutableCompound, node: Pseudo): void {
+  const name = node.value.toLowerCase();
+  const structural = STRUCTURAL_PSEUDOS.get(name);
+  if (structural) {
+    current.structural.push({ kind: structural });
+    return;
+  }
+  if (name === ':heading') {
+    current.structural.push({ kind: 'heading' });
+    return;
+  }
+  const nthKind = NTH_PSEUDOS.get(name);
+  if (nthKind) {
+    const nth = nthArguments(node);
+    if (nth) current.structural.push({ kind: nthKind, nth });
+    return;
+  }
+  if (name === ':not') {
+    const excluded = simpleCompoundList(node);
+    if (excluded) current.not.push(...excluded);
+  }
+}
+
+function isAlternativePseudo(node: SelectorNode): node is Pseudo {
+  if (node.type !== 'pseudo') return false;
+  const name = node.value.toLowerCase();
+  return name === ':is' || name === ':where';
+}
+
+function compoundNodes(compound: Compound): SelectorNode[] {
+  const nodes: SelectorNode[] = [];
+  if (compound.tag) nodes.push(selectorParser.tag({ value: compound.tag }));
+  if (compound.id) nodes.push(selectorParser.id({ value: compound.id }));
+  for (const className of compound.classes) {
+    nodes.push(selectorParser.className({ value: className }));
+  }
+  return nodes;
+}
+
+function expandAlternatives(
+  selector: Selector,
+  report: (message: string) => void
+): Selector[] {
+  const slots: { index: number; alternatives: Compound[] }[] = [];
+  selector.nodes.forEach((node, index) => {
+    if (!isAlternativePseudo(node)) return;
+    const alternatives = simpleCompoundList(node);
+    if (alternatives) slots.push({ index, alternatives });
+  });
+  if (slots.length === 0) return [selector];
+  slots.sort((left, right) => right.index - left.index);
+  let variants: Selector[] = [selector];
+  for (const slot of slots) {
+    const next: Selector[] = [];
+    for (const variant of variants) {
+      for (const alternative of slot.alternatives) {
+        const clone = variant.clone();
+        const target = clone.nodes[slot.index];
+        if (!target || !isAlternativePseudo(target)) continue;
+        target.replaceWith(...compoundNodes(alternative));
+        next.push(clone);
+        if (next.length > MAX_RESOLVED_SELECTORS) {
+          report(
+            `selector list too large after :is()/:where() expansion for "${selector.toString().trim()}"`
+          );
+          return [];
+        }
+      }
+    }
+    variants = next;
+  }
+  return variants;
+}
+
 function compileSelector(
   selector: Selector,
   rule: Rule,
@@ -207,7 +364,7 @@ function compileSelector(
       current = undefined;
       continue;
     }
-    if (!current) current = { classes: [] };
+    if (!current) current = { classes: [], not: [], structural: [] };
     switch (node.type) {
       case 'tag':
         current.tag = node.value.toLowerCase();
@@ -219,6 +376,9 @@ function compileSelector(
       case 'id':
         if (node.value === '') malformed = true;
         else current.id = node.value;
+        break;
+      case 'pseudo':
+        handlePseudo(current, node);
         break;
       case 'nesting':
         invalid = true;
@@ -282,7 +442,9 @@ export function parseCss(css: string, sourceUri: string, opts: ParseCssOptions):
     for (const selector of selectors) {
       let compiled: ClassRule[];
       try {
-        compiled = compileSelector(selector, rule, sourceUri, opts);
+        compiled = expandAlternatives(selector, report).flatMap((variant) =>
+          compileSelector(variant, rule, sourceUri, opts)
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         report(`malformed selector "${selector.toString().trim()}": ${message}`);

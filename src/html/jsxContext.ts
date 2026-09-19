@@ -155,6 +155,7 @@ export function analyzeJsxDocument(
       path,
       subjectParentChildren: [],
       subjectIndexInParent: 0,
+      siblingDataAvailable: false,
     };
   };
 
