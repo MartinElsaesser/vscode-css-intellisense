@@ -13,7 +13,11 @@ suite('Completion matrix (HTML)', () => {
 
   test('suggests descendant classes inside a matching ancestor', async () => {
     const div = await openFixture('matrix/div-descendant.html');
-    assert.ok(find(await completionsAt(div.document, div.position), 'text'));
+    const divItems = await completionsAt(div.document, div.position);
+    const text = find(divItems, 'text');
+    assert.ok(text, 'expected `text`');
+    assert.ok(text.detail?.includes('styles/main.css'), `detail: ${text.detail}`);
+    assert.ok(!text.detail?.includes('file://'), `detail: ${text.detail}`);
     const section = await openFixture('matrix/section-match.html');
     assert.ok(find(await completionsAt(section.document, section.position), 'text'));
   });
@@ -167,6 +171,39 @@ suite('Inline styles, imports, and configuration', () => {
     } finally {
       await config.update('enabled', undefined, vscode.ConfigurationTarget.Global);
     }
+  });
+
+  test('honors workspace files.exclude and search.exclude', async () => {
+    const { document, position } = await openFixture('matrix/settings-hidden.html');
+    const visible = async () =>
+      find(await completionsAt(document, position), 'settings-hidden') !== undefined;
+    await waitFor(visible);
+
+    const files = vscode.workspace.getConfiguration('files');
+    await files.update(
+      'exclude',
+      { '**/grouped/settings-hidden': true },
+      vscode.ConfigurationTarget.Global
+    );
+    try {
+      await waitFor(async () => !(await visible()));
+    } finally {
+      await files.update('exclude', undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor(visible);
+
+    const search = vscode.workspace.getConfiguration('search');
+    await search.update(
+      'exclude',
+      { '**/grouped/settings-hidden': true },
+      vscode.ConfigurationTarget.Global
+    );
+    try {
+      await waitFor(async () => !(await visible()));
+    } finally {
+      await search.update('exclude', undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor(visible);
   });
 
   test('scans Vue single-file components', async () => {

@@ -31,7 +31,7 @@ selector's ancestor requirements match the element's statically known context:
 |---|---|---|
 | `cssIntellisense.enabled` | `true` | Master switch. |
 | `cssIntellisense.cssGlobs` | `["**/*.css"]` | Stylesheets to index. |
-| `cssIntellisense.excludeGlobs` | `["**/node_modules/**","**/dist/**","**/build/**","**/out/**","**/.git/**"]` | Excluded paths. |
+| `cssIntellisense.excludeGlobs` | `["**/node_modules/**","**/dist/**","**/build/**","**/out/**","**/.git/**"]` | Excluded paths; merged with VS Code's `files.exclude` and `search.exclude`. |
 | `cssIntellisense.includeInlineStyles` | `true` | Index `<style>` blocks. |
 | `cssIntellisense.languages` | `["html","vue","svelte","javascriptreact","typescriptreact"]` | Where completions are offered; changing requires a window reload. |
 | `cssIntellisense.strictHierarchy` | `true` | When `false`, non-matching classes are shown demoted. |
@@ -48,7 +48,10 @@ Commands: `CSS Intellisense: Rebuild Index` and `CSS Intellisense: Show Index St
 
 - Indexing is workspace-wide. Strict matching keeps unrelated classes out, but
   classes defined for another page in the same workspace can still be offered
-  when the hierarchy happens to match. Link-scoped indexing is planned.
+  when the hierarchy happens to match. Link-scoped indexing is planned. In a
+  shared or monorepo root, open the project folder itself as the workspace root
+  or hide sibling folders via `cssIntellisense.excludeGlobs`, `files.exclude`,
+  or `search.exclude`.
 - Because VS Code merges completion providers, the built-in HTML provider or
   flat class-name extensions may still contribute items alongside this one.
 - Pseudo-classes, `:not()`/`:is()`/`:where()`, and attribute selectors are

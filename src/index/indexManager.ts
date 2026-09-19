@@ -40,7 +40,7 @@ export class IndexManager implements vscode.Disposable {
     const config = getConfig(folder.uri);
     this.loader = new FileLoader(config.maxFileSizeKB);
     this.resolver = new ImportResolver(this.loader, this.logger);
-    this.exclude = this.buildExclude(config.excludeGlobs);
+    this.exclude = this.buildExclude(this.effectiveExcludeGlobs());
   }
 
   async scan(): Promise<void> {
@@ -93,7 +93,7 @@ export class IndexManager implements vscode.Disposable {
     this.watcherDebouncer.dispose();
     this.disposeWatchers();
     this.loader.clear();
-    this.exclude = this.buildExclude(getConfig(this.folder.uri).excludeGlobs);
+    this.exclude = this.buildExclude(this.effectiveExcludeGlobs());
     await this.scan();
     this.watch();
     await this.refreshOpenDocuments();
@@ -158,6 +158,19 @@ export class IndexManager implements vscode.Disposable {
     }
     const pattern = globs.length === 1 ? globs[0]! : `{${globs.join(',')}}`;
     return { pattern, matcher: undefined };
+  }
+
+  private effectiveExcludeGlobs(): string[] {
+    const patterns = new Set(getConfig(this.folder.uri).excludeGlobs);
+    for (const section of ['files', 'search'] as const) {
+      const raw = vscode.workspace
+        .getConfiguration(section, this.folder.uri)
+        .get<Record<string, unknown>>('exclude');
+      for (const [pattern, value] of Object.entries(raw ?? {})) {
+        if (value) patterns.add(pattern);
+      }
+    }
+    return [...patterns];
   }
 
   private folderRelativePath(uri: vscode.Uri): string {

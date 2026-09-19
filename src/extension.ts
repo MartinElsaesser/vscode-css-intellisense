@@ -132,7 +132,9 @@ export function activate(context: vscode.ExtensionContext): void {
       logger.setLevel(getConfig().trace);
       if (
         event.affectsConfiguration('cssIntellisense.cssGlobs') ||
-        event.affectsConfiguration('cssIntellisense.excludeGlobs')
+        event.affectsConfiguration('cssIntellisense.excludeGlobs') ||
+        event.affectsConfiguration('files.exclude') ||
+        event.affectsConfiguration('search.exclude')
       ) {
         for (const manager of managers.values()) void manager.reconfigure();
       }

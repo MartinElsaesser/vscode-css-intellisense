@@ -68,7 +68,7 @@
             "**/.git/**"
           ],
           "scope": "resource",
-          "description": "Excluded paths."
+          "description": "Excluded paths. Workspace files.exclude and search.exclude patterns are also honored."
         },
         "cssIntellisense.includeInlineStyles": {
           "type": "boolean",

@@ -42,6 +42,10 @@ function usedClasses(ctx: ClassAttributeContext): Set<string> {
   return used;
 }
 
+function workspaceRelativePath(sourceUri: string): string {
+  return vscode.workspace.asRelativePath(vscode.Uri.parse(sourceUri), false);
+}
+
 export class CssCompletionProvider implements vscode.CompletionItemProvider {
   constructor(private readonly deps: CompletionDeps) {}
 
@@ -82,8 +86,7 @@ export class CssCompletionProvider implements vscode.CompletionItemProvider {
   resolveCompletionItem(item: vscode.CompletionItem): vscode.CompletionItem {
     if (!(item instanceof CssCompletionItem)) return item;
     const { selectorText, sourceUri, range } = item.completionData;
-    const uri = vscode.Uri.parse(sourceUri);
-    const relative = vscode.workspace.asRelativePath(uri, false);
+    const relative = workspaceRelativePath(sourceUri);
     const selection = {
       start: { line: range.start.line, character: range.start.character },
       end: { line: range.end.line, character: range.end.character },
@@ -111,7 +114,7 @@ export class CssCompletionProvider implements vscode.CompletionItemProvider {
     item.filterText = match.className;
     item.range = toVscodeRange(ctx.range);
 
-    const relative = vscode.workspace.asRelativePath(rule.sourceUri, false);
+    const relative = workspaceRelativePath(rule.sourceUri);
     const mismatch = !match.best;
     item.detail = `${rule.selectorText} — ${relative}${mismatch ? ' (context mismatch)' : ''}`;
 
