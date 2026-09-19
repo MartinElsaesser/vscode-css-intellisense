@@ -1,6 +1,6 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v13 · **Target:** VS Code `^1.138.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v14 · **Target:** VS Code `^1.138.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
@@ -11,6 +11,7 @@
 **Changes in v11:** completion data via a `CssCompletionItem` subclass instead of a nonexistent `CompletionItem.data` property (public API has none; the extension host passes the same instance to resolve) (§9.2).
 **Changes in v12:** Docker harness — `docker run --init` so `xvfb-run` is not PID 1; as PID 1 it hangs forever waiting for the Xvfb readiness signal on this image (verified on this machine) (§12.2).
 **Changes in v13:** minimum VS Code raised to `^1.138.0` — the installed `@types/vscode` 1.138 (resolved by the §13 caret range) is newer than the old `^1.90.0` engine and `vsce package` refuses to build; §13 package.json essentials updated.
+**Changes in v14:** simplification pass — dead data removed (`ParsedSource.styleBlocks`, `Compound.universal`, `ClassMatch.matching`/`applicable[]` → `fallback`, one-shot analysis wrappers, `DocumentAnalysis.styleBlocks[].css`), `WorkspaceIndex.classNamesByUri` dropped (proven write-only), imports stored unresolved and resolved once in `ImportResolver` via `vscode.Uri`, settings validated with a zod schema (with a `package.json` drift test), `@types/vscode` dev-dep line corrected to `^1.138`.
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -73,7 +74,6 @@ export interface Compound {
   tag?: string;            // lowercased; undefined = no tag constraint
   id?: string;             // exact match; undefined = no constraint
   classes: string[];       // exact, case-sensitive; empty = no constraint
-  universal: boolean;      // true for `*`, or when all parts were stripped (pseudo/attr-only)
 }
 
 export interface AncestorRequirement {
@@ -101,8 +101,7 @@ export interface ClassRule {
 
 export interface ImportRef {
   specifier: string;                 // e.g. "./base.css"
-  fromUri: string;                   // importer (uri.toString())
-  sourceUri: string;                 // resolved absolute uri.toString()
+  fromUri: string;                   // importer (uri.toString()); for inline: the containing document
   range: SourceRange;                // @import at-rule position
 }
 
@@ -111,7 +110,6 @@ export interface ParsedSource {
   version: number;                   // doc.version or file mtimeMs
   rules: ClassRule[];
   imports: ImportRef[];
-  styleBlocks?: { startOffset: number; endOffset: number; css: string }[]; // HTML/Vue/Svelte
 }
 ```
 
@@ -120,10 +118,10 @@ export interface ParsedSource {
 ```ts
 {
   className: 'text',
-  subject:   { tag: undefined, id: undefined, classes: ['text'], universal: false },
+  subject:   { tag: undefined, id: undefined, classes: ['text'] },
   ancestors: [
-    { compound: { tag: 'li', classes: ['card'], universal: false }, combinator: 'child' },
-    { compound: { tag: 'ul', classes: [], universal: false },       combinator: 'descendant' },
+    { compound: { tag: 'li', classes: ['card'] }, combinator: 'child' },
+    { compound: { tag: 'ul', classes: [] },       combinator: 'descendant' },
   ],
   selectorText: 'ul li.card > .text', origin: 'global', ...
 }
@@ -168,9 +166,9 @@ Synchronous, no I/O. Import resolution happens later (§8.3) so this function st
    | `tag` | `tag = value.toLowerCase()` |
    | `class` | push `value` into `classes` |
    | `id` | `id = value` |
-   | `universal` | `universal = true` |
+   | `universal` (`*`) | no effect: a `*` compound has all constraints empty |
    | `pseudo` | **ignore node and its subtree entirely** (this is how `:hover`, `::before`, `:not(...)`, `:is(...)`, `:where(...)` are dropped) |
-   | `attribute` | ignore; if the compound has no remaining parts, keep `universal = true` |
+   | `attribute` | ignore (an attribute-only compound constrains nothing) |
    | `nesting` (`&`) | **skip the whole selector** (unflattened CSS nesting unsupported) |
    | `comment` | ignore |
    | `string` | ignore (only occurs inside attributes) |
@@ -189,7 +187,7 @@ For each `atRule.name.toLowerCase() === 'import'`, accept only local file specif
 ```
 
 - Reject if specifier matches `/^(?:[a-z]+:|\/\/|data:)/i` or contains `#`.
-- Store `ImportRef` with the specifier; resolution to absolute URIs is in §8.3.
+- Store an `ImportRef` with `specifier`, `fromUri` and `range`; resolution to an absolute `vscode.Uri` happens once in §8.3.
 - Media query text after the specifier is ignored (imported rules are always active, consistent with `@media` handling).
 - For `origin:'inline'` (a `<style>` block), `ImportRef.fromUri` is the *containing document* URI, and resolution is relative to the document's directory — this matches HTML `<style>` base-URL behavior and Vue/Svelte build tooling.
 
@@ -203,9 +201,9 @@ For each `atRule.name.toLowerCase() === 'import'`, accept only local file specif
 - `.foo { .bar {} }` → no rules (native nesting: the inner rule has a `rule` ancestor).
 - `div .text, section .text` → two rules for `text` (union semantics).
 - `.foo\:bar` (Tailwind variant) → `className === 'foo:bar'`; escapes use the parser's decoded `value`.
-- `[data-x] .text` → ancestor compound `universal` (attribute stripped).
-- `.a:hover .text` → ancestor `.a` (pseudo stripped), not universal.
-- `.a > * .text` → universal child compound, then `.a` descendant.
+- `[data-x] .text` → ancestor compound with no constraints (attribute stripped).
+- `.a:hover .text` → ancestor `.a` (pseudo stripped), not unconstrained.
+- `.a > * .text` → unconstrained child compound, then `.a` descendant.
 - `@media (min-width: 40em) { div .text {} }` → parsed, no media effect.
 - `@keyframes x { from { opacity: 0 } }` → no rules, no parse attempt on `from`.
 - `&:hover` / `& .text` → skipped.
@@ -243,7 +241,7 @@ export interface ClassAttributeContext {
 export interface DocumentAnalysis {
   version: number;
   contextAt(offset: number): ClassAttributeContext | undefined;
-  styleBlocks: { startOffset: number; endOffset: number; css: string }[];
+  styleBlocks: { startOffset: number; endOffset: number }[];
 }
 
 export function analyzeHtmlDocument(
@@ -255,7 +253,7 @@ export function analyzeHtmlDocument(
 
 `parentChildren` is a shared array per parent, giving O(n) total memory and O(1) access to preceding siblings (`parentChildren[i-1]` for `+`, scan `0..i-1` backwards for `~`).
 
-The builder parses the whole document once (snapshots + style blocks) and is the cacheable unit of §5.3; `contextAt(offset)` is O(depth) and may be called repeatedly for the same version. A one-shot `analyzeHtml(text, offset, language)` wrapper (`analyzeHtmlDocument(...).contextAt(offset)`) is optional.
+The builder parses the whole document once (snapshots + style block offsets) and is the cacheable unit of §5.3; `contextAt(offset)` is O(depth) and may be called repeatedly for the same version.
 
 ### 5.2 Scanner states
 
@@ -391,7 +389,7 @@ function subjectMatches(subject: Compound, ctx: ClassAttributeContext): boolean 
 - Unknown **subject** tag/id (undefined) ⇒ wildcard, not a failure — the user may still be typing them.
 - For **ancestors**, a missing `id` is a known absence: `#main .text` does not match `<main>` without `id="main"`. Dynamic ids (`:id`, `v-bind:id`, JSX `id={x}`) are also treated as absent in v1 (see §15).
 - For the **subject**, a dynamic id yields `subjectId: undefined` ⇒ wildcard, not absence: `#x.y` is still offered on `<p :id="y">`. This is intentional — the attribute is being edited and the id may be supplied dynamically — and is asymmetric with ancestor handling.
-- `compoundMatches` ignores `universal` (already encoded as empty constraints).
+- `compoundMatches` only checks the fields present on the compound; a `*` or attribute-only compound has all constraints empty and therefore matches anything.
 
 ### 7.4 Acceptance matrix (exact expected results)
 
@@ -434,24 +432,20 @@ Cursor position is marked `▮`.
 ```ts
 export interface ClassMatch {
   className: string;
-  best?: ClassRule;        // highest-ranked matching rule; undefined if none matched
-  matching: ClassRule[];   // matching rules applicable to this document
-  applicable: ClassRule[]; // all applicable rules (origin filter passed)
+  best?: ClassRule;     // highest-ranked matching rule; undefined if none matched
+  fallback?: ClassRule; // first applicable rule (origin filter passed); set only when best is undefined
 }
 
 class WorkspaceIndex {
   private byUri = new Map<string, ParsedSource>();
   private byClass = new Map<string, ClassRule[]>();          // all rules, global + inline
-  private classNamesByUri = new Map<string, Set<string>>();  // reverse index for O(1) eviction
   private sourceKeysByDocument = new Map<string, Set<string>>(); // docUri -> its source keys (the file + all #style: sources)
-  private importGraph = new Map<string, Set<string>>();      // resolved imports per file
-  private folderIndex = new Map<string /*folderUri*/, WorkspaceIndex>(); // multi-root
 }
 ```
 
 Operations:
 
-- `apply(parsed: ParsedSource)`: evict only this source's rules (looked up via `classNamesByUri`), drop now-empty `byClass` buckets, then insert the new rules and refresh `classNamesByUri`. Buckets are shared across sources — never clear a class bucket wholesale.
+- `apply(parsed: ParsedSource)`: evict only this source's rules (by identity, via `byUri`), drop now-empty `byClass` buckets, then insert the new rules. Buckets are shared across sources — never clear a class bucket wholesale.
 - `replaceDocument(uri, sources: ParsedSource[])`: evict every key recorded in `sourceKeysByDocument.get(uri)` (the CSS file itself and all of its `#style:` sources), apply each new source, then record the new keys. All reparse paths (edit, close-from-disk) use this so a moved, edited, or deleted `<style>` block cannot leave stale rules behind.
 - `remove(uri)`: drop every key recorded for `uri`, i.e. `replaceDocument(uri, [])`.
 - `query(ctx: ClassAttributeContext, documentUri: string, opts: { includeNonMatching: boolean }, token?): ClassMatch[]`:
@@ -459,17 +453,14 @@ Operations:
   ```
   for (className, rules) of byClass:
     best = undefined
-    matching = []
-    applicable = []
+    fallback = undefined
     for rule of rules:
       if rule.origin === 'inline' && rule.documentUri !== documentUri: continue
-      applicable.push(rule)
-      if matches(rule, ctx):
-        matching.push(rule)
-        if best === undefined || rank(rule) > rank(best): best = rule
-    if best: results.push({ className, best, matching, applicable })
-    else if opts.includeNonMatching && applicable.length:
-      results.push({ className, matching: [], applicable })
+      if fallback === undefined: fallback = rule
+      if matches(rule, ctx) && (best === undefined || rank(rule) > rank(best)): best = rule
+    if best: results.push({ className, best })
+    else if opts.includeNonMatching && fallback:
+      results.push({ className, fallback })
   return results
   ```
 
@@ -485,7 +476,7 @@ When a CSS/HTML/Vue/Svelte document is parsed, each `<style>` block becomes its 
 
 ### 8.3 Import resolution
 
-- `resolveImport(fromUri, specifier)`: `posix`-normalize `dirname(fromUri.path) + '/' + specifier`; reject if it escapes the root of the containing workspace folder; produce a `vscode.Uri`. For `origin:'inline'` rules the base is the containing document URI (§4.3).
+- `resolveImport(fromUri, specifier)`: resolve with `vscode.Uri.joinPath(vscode.Uri.parse(fromUri), specifier)` (posix-normalizing, Windows-drive correct); reject if it escapes the root of the containing workspace folder. For `origin:'inline'` rules the base is the containing document URI (§4.3).
 - Parse each resolved file once (memoized by URI + mtime), recursively, with a visited set (cycle-safe) and `maxImportDepth` (default 10).
 - **Reachability eviction:** after any parse or update, compute the reachable set = files matching `cssGlobs` + transitive imports from them + imports from open documents' inline styles (honoring `resolveImports`, `maxImportDepth`, cycle-safe). Parsed sources that are neither glob-matched nor reachable are evicted; the mtime parse cache may keep them. This prevents rules from a deleted `@import` (or from `resolveImports` being turned off) from lingering in completions.
 - Imported rules keep `origin:'global'` and their own `sourceUri`; range points into the imported file.
@@ -542,7 +533,7 @@ provideCompletionItems(document, position, token):
   - `detail = selectorText + ' — ' + workspaceRelativePath(sourceUri)`;
   - `sortText = String(9 - rank(rule)).padStart(2, '0') + className.toLowerCase() + '\u0000' + className` (case-insensitive ordering, deterministic tiebreak);
   - return a `CssCompletionItem` (a subclass of `vscode.CompletionItem` with a `completionData = { selectorText, sourceUri, range }` field). VS Code's public API has no `data` property on `CompletionItem`, but the extension host caches the returned instances and passes the same object back to `resolveCompletionItem`; a subclass carries the data in a type-safe way (the pattern Microsoft's own extensions use).
-- Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `applicable` non-empty): `applicable[0]` supplies `rank()`, `selectorText`, `sourceUri` and `range` (for `data` and the docs link); emit with `sortText` prefixed `'zz'` (then the same rank/name ordering as above) and `detail = selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
+- Non-matching classes (only present when `strictHierarchy === false`; `best === undefined`, `fallback` set): `fallback` supplies `rank()`, `selectorText`, `sourceUri` and `range` (for `data` and the docs link); emit with `sortText` prefixed `'zz'` (then the same rank/name ordering as above) and `detail = selectorText + ' — ' + path + ' (context mismatch)'`. In strict mode they never reach `postProcess`.
 - Never return duplicate labels: one item per class name; if several rules match, merge selectors into the docs.
 
 `resolveCompletionItem` (reads `completionData` off the `CssCompletionItem` subclass instance):
@@ -584,7 +575,7 @@ where `commandLink = 'command:vscode.open?' + encodeURIComponent(JSON.stringify(
 | `cssIntellisense.hideAlreadyUsedClasses` | boolean | `true` | window | Skip classes already in the attribute. |
 | `cssIntellisense.trace` | `"off"\|"messages"\|"verbose"` | `"off"` | window | Output channel verbosity. |
 
-Runtime `workspace.getConfiguration('cssIntellisense', documentUri)` is read per completion and per index mutation; changing `cssGlobs`/`excludeGlobs` recreates watchers and reindexes via `onDidChangeConfiguration`; other settings take effect on the next read.
+Runtime `workspace.getConfiguration('cssIntellisense', documentUri)` is read per completion and per index mutation and passed through a zod schema (per-field fallbacks for malformed hand-edited values); changing `cssGlobs`/`excludeGlobs` recreates watchers and reindexes via `onDidChangeConfiguration`; other settings take effect on the next read.
 
 ### 10.2 Commands and UI
 
@@ -612,12 +603,13 @@ Rules: no CSS parsing inside `provideCompletionItems`; the import resolver is me
 
 ### 12.1 Unit tests (host, vitest)
 
-- Pure modules (`parseCss`, `matcher`, `analyzeHtmlDocument`, `analyzeJsxDocument`, import resolver core, config defaults) import no `vscode` APIs.
+- Pure modules (`parseCss`, `matcher`, `analyzeHtmlDocument`, `analyzeJsxDocument`, import specifier parsing, config schema) import no `vscode` APIs.
 - Table-driven matcher tests: every row of §7.4 plus mixed-chain cases and the invariant tests from §7.2.
 - Scanner tests: quote styles, unquoted values, cursor mid-list, empty partial, malformed HTML, omitted `</li>`, comments, `<script>` with `<div>` inside a string, `<style>` capture offsets, SVG class, case-insensitive tag/attr names, cursor in attr name (no context), `/>` in `html` vs `vue`, `<svg><path/></svg>` in `html` mode (path is closed; following siblings nest correctly), dynamic id treated as absent for ancestors.
 - Index query tests (pure query over a fixture index): case-insensitive/fuzzy partials (`Te`, `txt`) still return `text`; strict mode omits non-matching classes, `strictHierarchy:false` emits them with `zz` sort prefix.
 - JSX tests: `className="a |b"`, `className={"a |b"}`, dynamic `className={x}` (no context), component ancestors, `+`/`~` never match at subject or ancestor level.
 - Parser tests: all §4.4 cases, including native-nesting skip and rightmost-compound-without-class skip; a malformed selector alongside valid ones yields the valid rules and one logged error.
+- Config tests: the zod schema's defaults are validated against `package.json`'s `contributes.configuration` (a drift guard, and the only external file read in unit tests); malformed values fall back per field.
 - Import resolver: relative paths, inline-style base URI, cycles, depth cap, remote rejection, missing file.
 
 ### 12.2 Integration tests (headless Docker, default)
@@ -687,8 +679,8 @@ SPEC.md  README.md  CHANGELOG.md  LICENSE
 ```
 
 - **Build**: esbuild bundles to `dist/extension.js` (`platform: node`, `format: cjs`, `external: ['vscode']`, `target: 'node20'`, sourcemap). `typescript` is bundled because the extension host does not provide it, so expect a multi-MB bundle (~10 MB); **IMPLEMENTER MAY** split it into a lazily-imported chunk if size becomes a problem.
-- **Runtime deps**: `postcss` (^8), `postcss-selector-parser` (^7), `typescript` (^5; runtime + bundled only, listed here and not under dev deps), `picomatch` (^4; `excludeGlobs` matching for watcher events). No native modules.
-- **Dev deps**: `@types/vscode ^1.90`, `@types/node ^22` (vitest 5 peer range; extension code still targets the Node 20 runtime), `@types/mocha`, `esbuild`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint ^9` (flat config), `typescript-eslint ^8`. (`typescript` is intentionally absent: it is a runtime dependency and npm installs it for local `tsc` as well.)
+- **Runtime deps**: `postcss` (^8), `postcss-selector-parser` (^7), `typescript` (^5; runtime + bundled only, listed here and not under dev deps), `picomatch` (^4; `excludeGlobs` matching for watcher events), `zod` (^4; settings validation). No native modules.
+- **Dev deps**: `@types/vscode ^1.138`, `@types/node ^22` (vitest 5 peer range; extension code still targets the Node 20 runtime), `@types/mocha`, `@types/picomatch`, `esbuild`, `vitest`, `mocha`, `@vscode/test-electron ^3`, `@vscode/vsce`, `eslint ^9` (flat config), `typescript-eslint ^8`. (`typescript` is intentionally absent: it is a runtime dependency and npm installs it for local `tsc` as well.)
 - **package.json essentials**: `"main": "./dist/extension.js"`, `"engines": { "vscode": "^1.138.0" }`, `"extensionKind": ["workspace"]`, activation events:
 
   ```jsonc
