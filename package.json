@@ -6,7 +6,7 @@
   "publisher": "laborant",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.138.0"
   },
   "categories": [
     "Programming Languages"

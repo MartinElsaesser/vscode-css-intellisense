@@ -72,6 +72,30 @@ suite('Completion matrix (HTML)', () => {
     assert.ok(!find(await completionsAt(document, position), 'bare'));
   });
 
+  test('covers the remaining acceptance matrix rows', async () => {
+    const cases: [string, string, boolean][] = [
+      ['matrix/sibling-general.html', 'general', true],
+      ['matrix/compound-match.html', 'compound', true],
+      ['matrix/compound-missing.html', 'compound', false],
+      ['matrix/nested-match.html', 'nested', true],
+      ['matrix/nested-wrong.html', 'nested', false],
+      ['matrix/id-wrong.html', 'hashed', false],
+      ['matrix/pseudo.html', 'pseudo', true],
+      ['matrix/attr.html', 'attr', true],
+      ['matrix/notpseudo.html', 'notpseudo', true],
+      ['matrix/mixed.html', 'mixed', true],
+    ];
+    for (const [fixture, className, expected] of cases) {
+      const { document, position } = await openFixture(fixture);
+      const items = await completionsAt(document, position);
+      assert.strictEqual(
+        find(items, className) !== undefined,
+        expected,
+        `${fixture}: expected ${expected ? 'to find' : 'not to find'} \`${className}\``
+      );
+    }
+  });
+
   test('demotes non-matching classes when strictHierarchy is false', async () => {
     const config = vscode.workspace.getConfiguration('cssIntellisense');
     await config.update('strictHierarchy', false, vscode.ConfigurationTarget.Global);
