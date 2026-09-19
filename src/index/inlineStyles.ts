@@ -2,18 +2,20 @@ import * as vscode from 'vscode';
 import { parseCss } from '../css/parseCss';
 import { ParsedSource, SourceRange } from '../css/selectorModel';
 import { computeLineStarts, offsetAt, rangeFromOffsets } from '../css/sourceRange';
-import { analyzeHtmlDocument, HtmlLanguage } from '../html/analyzeHtml';
+import { analyzeHtmlDocument, DocumentAnalysis, HtmlLanguage } from '../html/analyzeHtml';
 
 export function collectInlineSourcesFromText(
   text: string,
   languageId: string,
   version: number,
-  documentUri: string
+  documentUri: string,
+  analysis?: DocumentAnalysis
 ): ParsedSource[] {
-  const analysis = analyzeHtmlDocument(text, languageId as HtmlLanguage, version);
+  const resolvedAnalysis =
+    analysis ?? analyzeHtmlDocument(text, languageId as HtmlLanguage, version);
   const documentLineStarts = computeLineStarts(text);
   const sources: ParsedSource[] = [];
-  for (const block of analysis.styleBlocks) {
+  for (const block of resolvedAnalysis.styleBlocks) {
     const css = text.slice(block.startOffset, block.endOffset);
     const parsed = parseCss(css, documentUri, { origin: 'inline', documentUri });
     const blockLineStarts = computeLineStarts(css);
@@ -32,11 +34,15 @@ export function collectInlineSourcesFromText(
   return sources;
 }
 
-export function collectInlineSources(document: vscode.TextDocument): ParsedSource[] {
+export function inlineSourcesFor(
+  document: vscode.TextDocument,
+  analysis?: DocumentAnalysis
+): ParsedSource[] {
   return collectInlineSourcesFromText(
     document.getText(),
     document.languageId,
     document.version,
-    document.uri.toString()
+    document.uri.toString(),
+    analysis
   );
 }

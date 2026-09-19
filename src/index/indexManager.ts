@@ -4,13 +4,13 @@ import { getConfig } from '../config';
 import { ImportResolver, isWithinFolder, resolveImportUri } from '../css/importResolver';
 import { parseCss } from '../css/parseCss';
 import { ParsedSource } from '../css/selectorModel';
-import { collectInlineSourcesFromText } from './inlineStyles';
+import { collectInlineSourcesFromText, inlineSourcesFor } from './inlineStyles';
+import { DocumentAnalysis, isHtmlLanguage } from '../html/analyzeHtml';
 import { Debouncer } from './debouncer';
 import { FileLoader } from './fileLoader';
 import { WorkspaceIndex } from './workspaceIndex';
 import type { Logger } from '../log';
 
-const INLINE_LANGUAGES = new Set(['html', 'vue', 'svelte']);
 const DEBOUNCE_MS = 200;
 const CHUNK_SIZE = 25;
 const SCAN_CAP = 5000;
@@ -28,27 +28,30 @@ export class IndexManager implements vscode.Disposable {
   private readonly watcherDebouncer = new Debouncer();
   private readonly globbed = new Set<string>();
   private readonly openDocuments = new Set<string>();
+  private exclude: ExcludeSpec = { pattern: undefined, matcher: undefined };
   private watchers: vscode.FileSystemWatcher[] = [];
   private disposed = false;
 
   constructor(
     readonly folder: vscode.WorkspaceFolder,
+    private readonly getAnalysis: (document: vscode.TextDocument) => DocumentAnalysis | undefined,
     private readonly logger: Logger
   ) {
-    this.loader = new FileLoader(getConfig(folder.uri).maxFileSizeKB);
+    const config = getConfig(folder.uri);
+    this.loader = new FileLoader(config.maxFileSizeKB);
     this.resolver = new ImportResolver(this.loader, this.logger);
+    this.exclude = this.buildExclude(config.excludeGlobs);
   }
 
   async scan(): Promise<void> {
     const config = getConfig(this.folder.uri);
-    const exclude = this.buildExclude(config.excludeGlobs);
     this.index.clear();
     this.globbed.clear();
     const collected = new Map<string, vscode.Uri>();
     for (const glob of config.cssGlobs) {
       const found = await vscode.workspace.findFiles(
         new vscode.RelativePattern(this.folder, glob),
-        exclude.pattern
+        this.exclude.pattern
       );
       for (const uri of found) collected.set(uri.toString(), uri);
     }
@@ -59,7 +62,7 @@ export class IndexManager implements vscode.Disposable {
         this.logger.warn(`scan cap reached (${SCAN_CAP} files); some stylesheets were not indexed`);
         break;
       }
-      if (exclude.matcher && exclude.matcher(this.folderRelativePath(uri))) continue;
+      if (this.exclude.matcher && this.exclude.matcher(this.folderRelativePath(uri))) continue;
       this.globbed.add(key);
       await this.reindexFile(uri);
       count++;
@@ -90,6 +93,7 @@ export class IndexManager implements vscode.Disposable {
     this.watcherDebouncer.dispose();
     this.disposeWatchers();
     this.loader.clear();
+    this.exclude = this.buildExclude(getConfig(this.folder.uri).excludeGlobs);
     await this.scan();
     this.watch();
     await this.refreshOpenDocuments();
@@ -103,17 +107,10 @@ export class IndexManager implements vscode.Disposable {
       else this.changeDebouncer.schedule(key, DEBOUNCE_MS, () => void this.applyCssText(key, document.getText(), document.version));
       return;
     }
-    if (!INLINE_LANGUAGES.has(document.languageId)) return;
+    if (!isHtmlLanguage(document.languageId)) return;
     this.openDocuments.add(key);
-    const text = document.getText();
-    const version = document.version;
-    const languageId = document.languageId;
-    if (immediate) this.applyInlineDocument(key, text, languageId, version);
-    else {
-      this.changeDebouncer.schedule(key, DEBOUNCE_MS, () =>
-        this.applyInlineDocument(key, text, languageId, version)
-      );
-    }
+    if (immediate) this.applyInlineDocument(document);
+    else this.changeDebouncer.schedule(key, DEBOUNCE_MS, () => this.applyInlineDocument(document));
     await this.updateReachability();
   }
 
@@ -125,7 +122,10 @@ export class IndexManager implements vscode.Disposable {
     if (!document.isDirty && document.uri.scheme === 'file') {
       const loaded = await this.loader.load(document.uri);
       if (loaded) {
-        this.applyInlineDocument(key, loaded.text, document.languageId, loaded.version);
+        this.index.replaceDocument(
+          key,
+          collectInlineSourcesFromText(loaded.text, document.languageId, loaded.version, key)
+        );
         await this.updateReachability();
         return;
       }
@@ -173,8 +173,7 @@ export class IndexManager implements vscode.Disposable {
   }
 
   private isExcluded(uri: vscode.Uri): boolean {
-    const exclude = this.buildExclude(getConfig(this.folder.uri).excludeGlobs);
-    if (exclude.matcher) return exclude.matcher(this.folderRelativePath(uri));
+    if (this.exclude.matcher) return this.exclude.matcher(this.folderRelativePath(uri));
     return false;
   }
 
@@ -253,20 +252,16 @@ export class IndexManager implements vscode.Disposable {
     await this.updateReachability();
   }
 
-  private applyInlineDocument(
-    key: string,
-    text: string,
-    languageId: string,
-    version: number
-  ): void {
-    const sources = collectInlineSourcesFromText(text, languageId, version, key);
-    this.index.replaceDocument(key, sources);
+  private applyInlineDocument(document: vscode.TextDocument): void {
+    const key = document.uri.toString();
+    if (!this.openDocuments.has(key)) return;
+    this.index.replaceDocument(key, inlineSourcesFor(document, this.getAnalysis(document)));
   }
 
   private async refreshOpenDocuments(): Promise<void> {
     for (const document of vscode.workspace.textDocuments) {
       if (!isWithinFolder(this.folder.uri, document.uri)) continue;
-      if (document.languageId === 'css' || INLINE_LANGUAGES.has(document.languageId)) {
+      if (document.languageId === 'css' || isHtmlLanguage(document.languageId)) {
         await this.handleDocumentChanged(document, true);
       }
     }

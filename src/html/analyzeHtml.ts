@@ -29,6 +29,12 @@ export interface DocumentAnalysis {
 
 export type HtmlLanguage = 'html' | 'vue' | 'svelte';
 
+const HTML_LANGUAGES: ReadonlySet<string> = new Set(['html', 'vue', 'svelte']);
+
+export function isHtmlLanguage(languageId: string): boolean {
+  return HTML_LANGUAGES.has(languageId);
+}
+
 interface ElementNode {
   tag: string;
   id?: string;

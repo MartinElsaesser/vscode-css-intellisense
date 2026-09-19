@@ -1,15 +1,12 @@
 import * as vscode from 'vscode';
 import { CssCompletionProvider } from './completion/provider';
 import { getConfig } from './config';
-import { analyzeHtmlDocument, DocumentAnalysis, HtmlLanguage } from './html/analyzeHtml';
+import { analyzeHtmlDocument, DocumentAnalysis, HtmlLanguage, isHtmlLanguage } from './html/analyzeHtml';
 import { analyzeJsxDocument, isJsxLanguage } from './html/jsxContext';
-import { collectInlineSources } from './index/inlineStyles';
+import { inlineSourcesFor } from './index/inlineStyles';
 import { IndexManager } from './index/indexManager';
 import { WorkspaceIndex } from './index/workspaceIndex';
 import { Logger } from './log';
-
-const HTML_LANGUAGES = new Set(['html', 'vue', 'svelte']);
-const JSX_LANGUAGES = new Set(['javascriptreact', 'typescriptreact']);
 
 export function activate(context: vscode.ExtensionContext): void {
   const logger = new Logger();
@@ -26,19 +23,9 @@ export function activate(context: vscode.ExtensionContext): void {
     return folder ? managers.get(folder.uri.toString()) : undefined;
   };
 
-  const createManager = (folder: vscode.WorkspaceFolder): IndexManager => {
-    const manager = new IndexManager(folder, logger);
-    managers.set(folder.uri.toString(), manager);
-    context.subscriptions.push(manager);
-    manager.watch();
-    void manager.scan();
-    return manager;
-  };
-
-  for (const folder of vscode.workspace.workspaceFolders ?? []) createManager(folder);
   const analysisFor = (document: vscode.TextDocument): DocumentAnalysis | undefined => {
     const language = document.languageId;
-    const isHtml = HTML_LANGUAGES.has(language);
+    const isHtml = isHtmlLanguage(language);
     if (!isHtml && !isJsxLanguage(language)) return undefined;
     const key = document.uri.toString();
     const cached = analysisCache.get(key);
@@ -50,10 +37,21 @@ export function activate(context: vscode.ExtensionContext): void {
     return analysis;
   };
 
+  const createManager = (folder: vscode.WorkspaceFolder): IndexManager => {
+    const manager = new IndexManager(folder, analysisFor, logger);
+    managers.set(folder.uri.toString(), manager);
+    context.subscriptions.push(manager);
+    manager.watch();
+    void manager.scan();
+    return manager;
+  };
+
+  for (const folder of vscode.workspace.workspaceFolders ?? []) createManager(folder);
+
   const indexFor = (document: vscode.TextDocument): WorkspaceIndex | undefined => {
     const manager = managerFor(document.uri);
     if (manager) return manager.index;
-    if (HTML_LANGUAGES.has(document.languageId)) return sessionIndex;
+    if (isHtmlLanguage(document.languageId)) return sessionIndex;
     return undefined;
   };
 
@@ -76,8 +74,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const last = change.text[change.text.length - 1];
     if (last !== '"' && last !== "'") return;
     const language = event.document.languageId;
-    const isJsx = JSX_LANGUAGES.has(language);
-    if (!HTML_LANGUAGES.has(language) && !isJsx) return;
+    const isJsx = isJsxLanguage(language);
+    if (!isHtmlLanguage(language) && !isJsx) return;
     const insertedLines = change.text.split('\n');
     const line = change.range.start.line + insertedLines.length - 1;
     const character =
@@ -105,8 +103,11 @@ export function activate(context: vscode.ExtensionContext): void {
     const manager = managerFor(document.uri);
     if (manager) {
       void manager.handleDocumentChanged(document, immediate);
-    } else if (HTML_LANGUAGES.has(document.languageId)) {
-      sessionIndex.replaceDocument(document.uri.toString(), collectInlineSources(document));
+    } else if (isHtmlLanguage(document.languageId)) {
+      sessionIndex.replaceDocument(
+        document.uri.toString(),
+        inlineSourcesFor(document, analysisFor(document))
+      );
     }
   };
 
@@ -123,7 +124,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const manager = managerFor(document.uri);
       if (manager) {
         void manager.handleDocumentClosed(document);
-      } else if (HTML_LANGUAGES.has(document.languageId)) {
+      } else if (isHtmlLanguage(document.languageId)) {
         sessionIndex.replaceDocument(document.uri.toString(), []);
       }
     }),
