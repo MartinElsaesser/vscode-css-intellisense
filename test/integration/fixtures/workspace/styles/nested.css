@@ -1,0 +1,4 @@
+.nest-outer {
+  .nest-inner { color: red; }
+  > .nest-child { color: red; }
+}

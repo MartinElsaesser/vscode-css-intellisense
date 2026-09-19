@@ -1,6 +1,6 @@
 # SPEC: `vscode-css-intellisense` — Hierarchy-Aware CSS Class Completion for HTML
 
-**Status:** Draft v16 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
+**Status:** Draft v17 · **Target:** VS Code `^1.134.0`, extension host Node ≥ 20, Linux/macOS/Windows
 **Changes in v4:** all 20 `FEEDBACK.md` items applied — ancestor `#id` semantics (§7.3, §7.4), `strictHierarchy:false` data path (§8.1, §9.2), native-nesting and rightmost-compound skips (§4.2), no partial prefilter (§8.1), JSX sibling policy (§6.2), full-document fixture + no tag synthesis (§5.2, §7.4), cacheable analysis APIs (§5.1, §6.1), inline-source lifecycle (§8.4), configurable watchers + `picomatch` (§8.4), inline `@import` base URI (§4.3), `ClassMatch`/multi-root (§8.1, §8.4), scanner wording (§5.2), `<p>` auto-close list (§5.2), `/>` per language (§5.2), `apply` precision (§8.1), whole-rule ranges (§3, §4.2), dependency/ESLint fixes (§13), Svelte directive note (§5.4).
 **Changes in v5:** round-2 review — single-`GlobPattern` exclude for `findFiles` + `picomatch` fallback (§8.4), `typescript` removed from dev deps (§13), §4.2 emit step deduplicated, subject vs ancestor dynamic-id semantics clarified (§7.3), `/>` honored for foreign elements in `html` mode (§5.2), non-matching item fields specified (§9.2).
 **Changes in v6:** round-3 nits — §15 dynamic-id row scoped to ancestors, §8.4 exclude passed as `RelativePattern(folder, …)`, §12.1 foreign-element scanner test, §9.2 `applicable[0]` also supplies `range`.
@@ -14,6 +14,7 @@
 **Changes in v14:** simplification pass — dead data removed (`ParsedSource.styleBlocks`, `Compound.universal`, `ClassMatch.matching`/`applicable[]` → `fallback`, one-shot analysis wrappers, `DocumentAnalysis.styleBlocks[].css`), `WorkspaceIndex.classNamesByUri` dropped (proven write-only), imports stored unresolved and resolved once in `ImportResolver` via `vscode.Uri`, settings validated with a zod schema (with a `package.json` drift test), `@types/vscode` dev-dep line corrected to `^1.138`.
 **Changes in v15:** minimum VS Code lowered to `^1.134.0` and `@types/vscode` pinned to `1.134.0` — 1.135 types are not published and code-server 1.135.0 cannot install a `^1.138.0` extension; the API surface used is unchanged and validates against the older types (§13).
 **Changes in v16:** the effective excludes now merge the workspace `files.exclude` and `search.exclude` keys (truthy values; `when` clauses not evaluated) with `cssIntellisense.excludeGlobs` for both scanning and watcher filtering, so hiding a folder in VS Code also hides its classes (§8.4, §10.1); provider detail paths are now always workspace-relative (implementation bug fix, §9.2).
+**Changes in v17:** native CSS nesting is now resolved to concrete selectors before compilation — implicit `& ` descendant, relative selectors, `&` substitution (including mid-selector), comma cross-products, at-rule pass-through, memoized and capped (§4.2, §4.4, §15).
 **Purpose of this document:** implementation-ready specification. It defines exact data structures, algorithms, module boundaries, configuration, tests, and milestones. An implementer should be able to build the extension without further design decisions; remaining freedoms are marked "IMPLEMENTER MAY".
 
 ---
@@ -148,20 +149,27 @@ Synchronous, no I/O. Import resolution happens later (§8.3) so this function st
 ### 4.2 Pipeline
 
 1. `postcss.parse(css, { from: sourceUri })`. On `CssSyntaxError`: throw a typed `ParseFailure` (caller handles, §8.5). Do not attempt partial recovery.
-2. `root.walkRules(rule => …)`. `walkRules` already descends into at-rules. Before processing a rule, walk `rule.parent` chain; **skip the rule if any ancestor is a `rule` node** (native CSS nesting): postcss exposes `.foo { .bar {} }` as an ordinary rule with an implicit `&`, and compiling `.bar` as top-level would be a miscompile, not a miss. Also skip if any ancestor at-rule name (lowercased, without `@`) is in `SKIP_AT_RULES`.
+2. `root.walkRules(rule => …)`. `walkRules` already descends into at-rules. First skip the rule if any ancestor at-rule name (lowercased, without `@`) is in `SKIP_AT_RULES`.
    - `SKIP_AT_RULES = ['keyframes','-webkit-keyframes','-moz-keyframes','font-face','page','counter-style','font-feature-values','property','viewport','-ms-viewport']`
    - All other at-rules (`media`, `supports`, `layer`, `container`, `scope`, unknown) do not affect matching; their nested rules are processed normally.
-3. Parse `rule.selector` with `postcss-selector-parser`:
+3. **Resolve native CSS nesting** (`resolveRuleSelectors(rule)`, memoized per file) into concrete selectors before compilation:
+   - A rule without a `rule` ancestor resolves to its own parsed selector list; a top-level selector containing `&` is invalid and skipped.
+   - A nested rule resolves against its **nearest ancestor rule**, walking through any number of at-rule nodes: for each pair of (parent resolved selector, own selector), the combined selector is built with `postcss-selector-parser`:
+     - if the own selector contains `nesting` (`&`) nodes, each is replaced in place by the parent selector's nodes (mid-selector `&` supported);
+     - otherwise, if the own selector starts with a combinator (relative selector, e.g. `> .x`), the parent nodes are prepended directly;
+     - otherwise the parent nodes plus a descendant combinator are prepended (implicit `& `).
+   - Comma lists cross-product at every level (`total = parent_count × own_count`). Resolution is capped at `MAX_RESOLVED = 256` selectors per rule; on overflow the rule is skipped (its descendants inherit the skip). A rule whose ancestor cannot be resolved is skipped.
+   - Conservative skips (not representable by the matcher, §15): a `nesting` node preceded anywhere by a `+`/`~` combinator in the same selector.
+4. For each resolved selector, parse it with `postcss-selector-parser` (already AST; malformed own selector → report via `onError` and skip the rule):
 
    ```ts
-   const selRoot = selectorParser().astSync(rule.selector);
-   for (const sel of selRoot.nodes) { /* each `sel` is one comma-separated selector */ }
+   for (const sel of resolvedSelectors) { /* each `sel` is one comma-separated selector */ }
    ```
 
-4. **Split `sel.nodes` into compounds/combinators.** Start a new compound array on `type === 'combinator'`; normalize the combinator:
+5. **Split `sel.nodes` into compounds/combinators.** Start a new compound array on `type === 'combinator'`; normalize the combinator:
    - trim `node.value`; `''`/`' '` → `descendant`; `'>'` → `child`; `'+'` → `adjacent`; `'~'` → `general`; anything else (named combinators like `/deep/`) → skip this selector.
    - A leading combinator (relative selector) → skip this selector.
-5. **Map simple-selector nodes into compound fields:**
+6. **Map simple-selector nodes into compound fields:**
 
    | node type | effect |
    |---|---|
@@ -171,14 +179,14 @@ Synchronous, no I/O. Import resolution happens later (§8.3) so this function st
    | `universal` (`*`) | no effect: a `*` compound has all constraints empty |
    | `pseudo` | **ignore node and its subtree entirely** (this is how `:hover`, `::before`, `:not(...)`, `:is(...)`, `:where(...)` are dropped) |
    | `attribute` | ignore (an attribute-only compound constrains nothing) |
-   | `nesting` (`&`) | **skip the whole selector** (unflattened CSS nesting unsupported) |
+   | `nesting` (`&`) | **skip the whole selector** (only reachable for pseudo-nested `&`, which is ignored anyway) |
    | `comment` | ignore |
    | `string` | ignore (only occurs inside attributes) |
 
-6. **Subject compound = the rightmost compound of the selector.** If it contains no `class`, skip the whole selector: `.a div` and `div .a > p` yield no rules (no class can be completed from them). Classes in non-rightmost compounds only constrain ancestors.
-7. Emit one `ClassRule` per distinct class in the subject compound (so `div .a.b` emits rules for `.a` and `.b`, both with subject `a.b`).
-8. `range` from `rule.source.start`/`rule.source.end` (postcss is 1-based line, 1-based column → subtract 1 from each). This is the whole rule including its block; every list entry of the same rule shares it. `selectorText = sel.toString().trim()`.
-9. **Dedupe within file**: key `className + '\u0000' + selectorText + '\u0000' + subject/ancestors signature`.
+7. **Subject compound = the rightmost compound of the selector.** If it contains no `class`, skip the whole selector: `.a div` and `div .a > p` yield no rules (no class can be completed from them). Classes in non-rightmost compounds only constrain ancestors.
+8. Emit one `ClassRule` per distinct class in the subject compound (so `div .a.b` emits rules for `.a` and `.b`, both with subject `a.b`).
+9. `range` from `rule.source.start`/`rule.source.end` (postcss is 1-based line, 1-based column → subtract 1 from each). This is the whole rule including its block; every list entry of the same rule shares it. `selectorText = resolvedSelector.toString().trim()` (the resolved form, e.g. `.hero .base`).
+10. **Dedupe within file**: key `className + '\u0000' + selectorText + '\u0000' + subject/ancestors signature`.
 
 ### 4.3 `@import` extraction
 
@@ -200,7 +208,17 @@ For each `atRule.name.toLowerCase() === 'import'`, accept only local file specif
 - `.a, .b` → two independent selectors.
 - `.a, .b p` → only `.a` yields a rule (rightmost compound `p` has no class).
 - `.a div` / `div .a > p` → no rules (rightmost compound has no class).
-- `.foo { .bar {} }` → no rules (native nesting: the inner rule has a `rule` ancestor).
+- `.foo { .bar {} }` → rule `.foo .bar` for `bar` (implicit `& ` descendant).
+- `.hero { .base, .vite {} }` → `.hero .base` and `.hero .vite`.
+- `.hero { &.active {} }` / `.hero { &:hover {} }` → `.hero.active` / `.hero:hover`; pseudos stripped as usual.
+- `.hero { > .base {} }` → `.hero > .base` (relative selector).
+- `.hero { .dark & {} }` → `.dark .hero` (mid-selector `&`).
+- `.a, .b { .c {} }` → `.a .c`, `.b .c` (cross-product).
+- `.a { .b { .c {} } }` → `.a .b .c` (recursive).
+- `.a { @media (min-width: 40em) { .b {} } }` → `.a .b` (at-rule pass-through).
+- `.hero { + .base {} }` → `.hero + .base`; `.hero { & + .base {} }` → `.hero + .base`.
+- `.a { .x + & {} }` / `.a { & + & {} }` → skipped (nesting preceded by a sibling combinator).
+- Top-level `&:hover` / `& .text` → skipped.
 - `div .text, section .text` → two rules for `text` (union semantics).
 - `.foo\:bar` (Tailwind variant) → `className === 'foo:bar'`; escapes use the parser's decoded `value`.
 - `[data-x] .text` → ancestor compound with no constraints (attribute stripped).
@@ -208,7 +226,6 @@ For each `atRule.name.toLowerCase() === 'import'`, accept only local file specif
 - `.a > * .text` → unconstrained child compound, then `.a` descendant.
 - `@media (min-width: 40em) { div .text {} }` → parsed, no media effect.
 - `@keyframes x { from { opacity: 0 } }` → no rules, no parse attempt on `from`.
-- `&:hover` / `& .text` → skipped.
 - Malformed selector → `postcss-selector-parser` throws: catch per-selector, log, continue with other rules in the file.
 
 ---
@@ -610,7 +627,7 @@ Rules: no CSS parsing inside `provideCompletionItems`; the import resolver is me
 - Scanner tests: quote styles, unquoted values, cursor mid-list, empty partial, malformed HTML, omitted `</li>`, comments, `<script>` with `<div>` inside a string, `<style>` capture offsets, SVG class, case-insensitive tag/attr names, cursor in attr name (no context), `/>` in `html` vs `vue`, `<svg><path/></svg>` in `html` mode (path is closed; following siblings nest correctly), dynamic id treated as absent for ancestors.
 - Index query tests (pure query over a fixture index): case-insensitive/fuzzy partials (`Te`, `txt`) still return `text`; strict mode omits non-matching classes, `strictHierarchy:false` emits them with `zz` sort prefix.
 - JSX tests: `className="a |b"`, `className={"a |b"}`, dynamic `className={x}` (no context), component ancestors, `+`/`~` never match at subject or ancestor level.
-- Parser tests: all §4.4 cases, including native-nesting skip and rightmost-compound-without-class skip; a malformed selector alongside valid ones yields the valid rules and one logged error.
+- Parser tests: all §4.4 cases, including native-nesting resolution (implicit, relative, `&`, recursion, cross-product, at-rule pass-through) and rightmost-compound-without-class skip; a malformed selector alongside valid ones yields the valid rules and one logged error.
 - Config tests: the zod schema's defaults are validated against `package.json`'s `contributes.configuration` (a drift guard, and the only external file read in unit tests); malformed values fall back per field.
 - Import resolver: relative paths, inline-style base URI, cycles, depth cap, remote rejection, missing file.
 
@@ -725,7 +742,8 @@ Definition of done for the project: all §7.4 acceptance rows pass in integratio
 | Svelte `class:foo` not modeled | Conditional class; documented false negative when such an element must satisfy `.foo` as an ancestor. |
 | JSX `+`/`~` never match | Sibling order across components is unreliable; strictness over approximation. |
 | No implicit `html`/`body`/`head` synthesis | Markup modeled as written; full-document fixtures required for those tags. |
-| Native CSS nesting, rightmost-compound-without-class selectors | Skipped rather than miscompiled (§4.2). |
+| Rightmost-compound-without-class selectors | Skipped rather than miscompiled (§4.2). |
+| Native nesting combined with sibling combinators (`&` preceded by `+`/`~`, e.g. `.a { & + & {} }`) | Skipped rather than miscompiled (§4.2); simple relative forms like `.a { + .b {} }` and `.a { & + .b {} }` are supported. |
 | `@scope` wrapper ignored (its nested rules are processed normally) | Documented; can yield false positives; `@scope` evaluation is a non-goal (§1.3). |
 | Minified single-line CSS yields coarse ranges | Acceptable; docs link uses the rule start. |
 

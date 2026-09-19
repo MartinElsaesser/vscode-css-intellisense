@@ -76,6 +76,18 @@ suite('Completion matrix (HTML)', () => {
     assert.ok(!find(await completionsAt(document, position), 'bare'));
   });
 
+  test('resolves native CSS nesting', async () => {
+    const inside = await openFixture('matrix/nested.html');
+    await waitFor(async () => {
+      const items = await completionsAt(inside.document, inside.position);
+      return find(items, 'nest-inner') !== undefined && find(items, 'nest-child') !== undefined;
+    });
+    const outside = await openFixture('matrix/nested-wrong.html');
+    assert.ok(find(await completionsAt(outside.document, outside.position), 'bare'), 'positive control');
+    assert.ok(!find(await completionsAt(outside.document, outside.position), 'nest-inner'));
+    assert.ok(!find(await completionsAt(outside.document, outside.position), 'nest-child'));
+  });
+
   test('covers the remaining acceptance matrix rows', async () => {
     const cases: [string, string, boolean][] = [
       ['matrix/sibling-general.html', 'general', true],

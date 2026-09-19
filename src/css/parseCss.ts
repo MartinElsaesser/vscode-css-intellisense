@@ -1,5 +1,5 @@
 import postcss, { AtRule, Node, Rule } from 'postcss';
-import selectorParser, { Selector } from 'postcss-selector-parser';
+import selectorParser, { Node as SelectorNode, Selector } from 'postcss-selector-parser';
 import { extractImportSpecifier } from './importSpecifier';
 import {
   AncestorRequirement,
@@ -41,6 +41,8 @@ const SKIP_AT_RULES = new Set([
   '-ms-viewport',
 ]);
 
+const MAX_RESOLVED_SELECTORS = 256;
+
 interface MutableCompound {
   tag?: string;
   id?: string;
@@ -69,16 +71,115 @@ function toRange(node: Rule | AtRule): SourceRange {
   };
 }
 
-function hasSkippedAncestor(rule: Rule): boolean {
+function hasSkippedAtRuleAncestor(rule: Rule): boolean {
   let parent: Node | undefined = rule.parent;
   for (; parent; parent = parent.parent) {
-    if (parent.type === 'rule') return true;
     if (parent.type === 'atrule') {
       const name = (parent as AtRule).name.toLowerCase().replace(/^@/, '');
       if (SKIP_AT_RULES.has(name)) return true;
     }
   }
   return false;
+}
+
+function nearestRuleAncestor(rule: Rule): Rule | undefined {
+  let parent: Node | undefined = rule.parent;
+  for (; parent; parent = parent.parent) {
+    if (parent.type === 'rule') return parent as Rule;
+  }
+  return undefined;
+}
+
+function parseSelectorList(text: string): Selector[] | undefined {
+  try {
+    return selectorParser().astSync(text).nodes;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSiblingCombinator(node: SelectorNode): boolean {
+  if (node.type !== 'combinator') return false;
+  const value = node.value.trim();
+  return value === '+' || value === '~';
+}
+
+function hasUnrepresentableNesting(selector: Selector): boolean {
+  let siblingSeen = false;
+  for (const node of selector.nodes) {
+    if (isSiblingCombinator(node)) siblingSeen = true;
+    else if (node.type === 'nesting' && siblingSeen) return true;
+  }
+  return false;
+}
+
+function combineSelector(parent: Selector, own: Selector): Selector {
+  const hasNesting = own.nodes.some((node) => node.type === 'nesting');
+  const combined = selectorParser.selector({ value: '' });
+  const first = own.nodes[0];
+  if (!hasNesting) {
+    for (const node of parent.nodes) combined.append(node.clone());
+    if (first?.type !== 'combinator') combined.append(selectorParser.combinator({ value: ' ' }));
+  }
+  for (const node of own.nodes) {
+    if (node.type === 'nesting') {
+      for (const parentNode of parent.nodes) combined.append(parentNode.clone());
+    } else {
+      combined.append(node.clone());
+    }
+  }
+  for (const node of combined.nodes) {
+    if (node.type === 'combinator') {
+      const spaced = node.value.trim() !== '';
+      node.spaces = { before: spaced ? ' ' : '', after: spaced ? ' ' : '' };
+    } else {
+      node.spaces = { before: '', after: '' };
+    }
+  }
+  return combined;
+}
+
+function resolveRuleSelectors(
+  rule: Rule,
+  cache: Map<Rule, Selector[] | undefined>,
+  report: (message: string) => void
+): Selector[] | undefined {
+  if (cache.has(rule)) return cache.get(rule);
+  const ownSelectors = parseSelectorList(rule.selector);
+  if (!ownSelectors) {
+    report(`malformed selector "${rule.selector}"`);
+    cache.set(rule, undefined);
+    return undefined;
+  }
+  const parentRule = nearestRuleAncestor(rule);
+  if (!parentRule) {
+    const hasTopLevelNesting = ownSelectors.some((selector) =>
+      selector.nodes.some((node) => node.type === 'nesting')
+    );
+    const resolved = hasTopLevelNesting ? undefined : ownSelectors;
+    cache.set(rule, resolved);
+    return resolved;
+  }
+  const parentSelectors = resolveRuleSelectors(parentRule, cache, report);
+  if (!parentSelectors) {
+    cache.set(rule, undefined);
+    return undefined;
+  }
+  const resolved: Selector[] = [];
+  for (const own of ownSelectors) {
+    if (hasUnrepresentableNesting(own)) continue;
+    for (const parent of parentSelectors) {
+      resolved.push(combineSelector(parent, own));
+      if (resolved.length > MAX_RESOLVED_SELECTORS) {
+        report(`selector list too large after nesting resolution for "${rule.selector}"`);
+        cache.set(rule, undefined);
+        return undefined;
+      }
+    }
+  }
+  const result = resolved.length > 0 ? resolved : undefined;
+  cache.set(rule, result);
+  return result;
 }
 
 function compileSelector(
@@ -172,24 +273,19 @@ export function parseCss(css: string, sourceUri: string, opts: ParseCssOptions):
 
   const rules: ClassRule[] = [];
   const seen = new Set<string>();
+  const resolvedSelectors = new Map<Rule, Selector[] | undefined>();
 
   root.walkRules((rule) => {
-    if (hasSkippedAncestor(rule)) return;
-    let selectorRoot;
-    try {
-      selectorRoot = selectorParser().astSync(rule.selector);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      report(`malformed selector "${rule.selector}": ${message}`);
-      return;
-    }
-    for (const selector of selectorRoot.nodes) {
+    if (hasSkippedAtRuleAncestor(rule)) return;
+    const selectors = resolveRuleSelectors(rule, resolvedSelectors, report);
+    if (!selectors) return;
+    for (const selector of selectors) {
       let compiled: ClassRule[];
       try {
         compiled = compileSelector(selector, rule, sourceUri, opts);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        report(`malformed selector "${rule.selector}": ${message}`);
+        report(`malformed selector "${selector.toString().trim()}": ${message}`);
         continue;
       }
       for (const classRule of compiled) {

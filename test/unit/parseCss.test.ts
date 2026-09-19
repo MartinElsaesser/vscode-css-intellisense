@@ -51,8 +51,15 @@ describe('parseCss — selector compilation', () => {
     expect(rulesFor('div .a > p { }', 'a')).toHaveLength(0);
   });
 
-  it('skips rules nested in rules (native CSS nesting)', () => {
-    expect(rulesFor('.foo { .bar { } }', 'bar')).toHaveLength(0);
+  it('resolves rules nested in rules (native CSS nesting)', () => {
+    const rule = rulesFor('.foo { .bar { } }', 'bar')[0]!;
+    expect(rule.selectorText).toBe('.foo .bar');
+    expect(rule.ancestors).toEqual([
+      {
+        compound: { tag: undefined, id: undefined, classes: ['foo'] },
+        combinator: 'descendant',
+      },
+    ]);
   });
 
   it('compiles descendants with nearest-first ancestors', () => {
@@ -154,6 +161,85 @@ describe('parseCss — selector compilation', () => {
 
   it('throws ParseFailure on syntax errors', () => {
     expect(() => parse('.a {')).toThrow(ParseFailure);
+  });
+});
+
+describe('parseCss — native CSS nesting', () => {
+  it('resolves nested comma lists', () => {
+    const base = rulesFor('.hero { .base, .framework, .vite { } }', 'base')[0]!;
+    expect(base.selectorText).toBe('.hero .base');
+    const vite = rulesFor('.hero { .base, .framework, .vite { } }', 'vite')[0]!;
+    expect(vite.selectorText).toBe('.hero .vite');
+  });
+
+  it('substitutes & in compounds', () => {
+    const active = rulesFor('.hero { &.active { } }', 'active')[0]!;
+    expect(active.selectorText).toBe('.hero.active');
+    expect(active.subject.classes).toEqual(['hero', 'active']);
+    const hover = rulesFor('.hero { &:hover { } }', 'hero').find(
+      (rule) => rule.selectorText === '.hero:hover'
+    )!;
+    expect(hover.ancestors).toEqual([]);
+  });
+
+  it('resolves relative selectors', () => {
+    const rule = rulesFor('.hero { > .base { } }', 'base')[0]!;
+    expect(rule.selectorText).toBe('.hero > .base');
+    expect(rule.ancestors[0]!.combinator).toBe('child');
+  });
+
+  it('substitutes mid-selector &', () => {
+    const rule = rulesFor('.hero { .dark & { } }', 'hero').find(
+      (candidate) => candidate.selectorText === '.dark .hero'
+    )!;
+    expect(rule.ancestors[0]!.compound.classes).toEqual(['dark']);
+  });
+
+  it('resolves recursively', () => {
+    const rule = rulesFor('.a { .b { .c { } } }', 'c')[0]!;
+    expect(rule.selectorText).toBe('.a .b .c');
+    expect(rule.ancestors.map((requirement) => requirement.compound.classes[0])).toEqual([
+      'b',
+      'a',
+    ]);
+  });
+
+  it('cross-products parent selector lists', () => {
+    const rules = rulesFor('.a, .b { .c { } }', 'c');
+    expect(rules.map((rule) => rule.selectorText).sort()).toEqual(['.a .c', '.b .c']);
+  });
+
+  it('passes through nested at-rules at any depth', () => {
+    const single = rulesFor('.a { @media (min-width: 40em) { .b { } } }', 'b')[0]!;
+    expect(single.selectorText).toBe('.a .b');
+    const deep = rulesFor(
+      '.a { @media (min-width: 40em) { .b { @supports (display: grid) { .c { } } } } }',
+      'c'
+    )[0]!;
+    expect(deep.selectorText).toBe('.a .b .c');
+  });
+
+  it('supports nested sibling relative selectors', () => {
+    const relative = rulesFor('.hero { + .base { } }', 'base')[0]!;
+    expect(relative.selectorText).toBe('.hero + .base');
+    expect(relative.ancestors[0]!.combinator).toBe('adjacent');
+    const explicit = rulesFor('.hero { & + .base { } }', 'base')[0]!;
+    expect(explicit.selectorText).toBe('.hero + .base');
+  });
+
+  it('skips nesting preceded by sibling combinators', () => {
+    expect(rulesFor('.a { .x + & { } }', 'a')).toHaveLength(1);
+    expect(rulesFor('.a { & + & { } }', 'a')).toHaveLength(1);
+  });
+
+  it('propagates unresolvable parents to descendants', () => {
+    expect(rulesFor('.a { & + & { .c { } } }', 'c')).toHaveLength(0);
+  });
+
+  it('caps cross-product growth', () => {
+    const list = Array.from({ length: 20 }, (_, index) => `.p${index}`).join(', ');
+    const css = `${list} { ${list} { .x { } } }`;
+    expect(rulesFor(css, 'x')).toHaveLength(0);
   });
 });
 

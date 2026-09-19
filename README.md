@@ -20,6 +20,8 @@ selector's ancestor requirements match the element's statically known context:
   blocks, and follows local `@import`s.
 - Understands descendant, child (`>`), adjacent (`+`), and general (`~`)
   sibling combinators, tag and `#id` requirements, and multi-class compounds.
+- Resolves native CSS nesting (implicit `& ` descendant, relative selectors,
+  `&` substitution, comma cross-products) before matching.
 - Hover/inspect detail shows the matching selector and its stylesheet; the
   resolved documentation links to the rule.
 - Works in plain HTML, Vue and Svelte single-file components, and JSX/TSX
@@ -59,8 +61,9 @@ Commands: `CSS Intellisense: Rebuild Index` and `CSS Intellisense: Show Index St
 - Dynamic classes (`:class`, Svelte `class:foo`/expressions, JSX `{expr}`) are
   not modeled. JSX chains stop at components, and sibling combinators never
   match in JSX because component-rendered DOM structure is unknowable.
-- Native CSS nesting, `@scope`, and rightmost compounds without a class are
-  skipped rather than mis-compiled.
+- `@scope` and rightmost compounds without a class are skipped rather than
+  mis-compiled; native nesting involving sibling combinators around `&`
+  (e.g. `& + &`) is skipped rather than guessed at.
 - Auto-triggering after typing a quote is a workaround; Ctrl+Space always works
   and the behavior can be disabled with `cssIntellisense.triggerSuggestAfterQuote`.
 
